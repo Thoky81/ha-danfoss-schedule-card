@@ -162,23 +162,22 @@ def publish(sid):
         overall = "ok"
     else:
         overall = "unknown"
-    state.set(
-        ENTITY_PREFIX + sid,
-        overall,
-        new_attributes={
-            "friendly_name": f"Climate schedule {s.get('title', sid)}",
-            "icon": "mdi:calendar-clock",
-            "title": s.get("title", sid),
-            "climates": s["climates"],
-            "presets": s["presets"],
-            "days": s["days"],
-            "mode": s.get("mode", "native"),
-            "oper_mode": s.get("oper_mode", 1),
-            "z2m_base_topic": s.get("z2m_base_topic", Z2M_DEFAULT_BASE),
-            "status": status,
-            "updated": s.get("updated"),
-        },
-    )
+    # deep copy: SCHEDULES is mutated in place later, and HA diffs new vs old attributes
+    # before pushing them to the frontend; a shared dict would make every update look unchanged
+    attrs = json.loads(json.dumps({
+        "friendly_name": f"Climate schedule {s.get('title', sid)}",
+        "icon": "mdi:calendar-clock",
+        "title": s.get("title", sid),
+        "climates": s["climates"],
+        "presets": s["presets"],
+        "days": s["days"],
+        "mode": s.get("mode", "native"),
+        "oper_mode": s.get("oper_mode", 1),
+        "z2m_base_topic": s.get("z2m_base_topic", Z2M_DEFAULT_BASE),
+        "status": status,
+        "updated": s.get("updated"),
+    }))
+    state.set(ENTITY_PREFIX + sid, overall, new_attributes=attrs)
 
 
 def set_status(sid, eid, st, msg=""):

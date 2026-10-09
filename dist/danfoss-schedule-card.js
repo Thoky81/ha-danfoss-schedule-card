@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.4
+ * danfoss-schedule-card  v1.4.6
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -12,7 +12,7 @@
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.6';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -194,7 +194,7 @@
       const rows = DAYS.map((name, d) => {
         const n = blockCount(data.days[d], data.presets);
         let cells = '';
-        for (let c = 0; c < SLOTS; c++) cells += `<div class="cell${c % 12 === 0 && c ? ' h6' : ''}" data-d="${d}" data-c="${c}" style="background:${data.presets[+data.days[d][c]].color}"></div>`;
+        for (let c = 0; c < SLOTS; c++) cells += `<div class="cell${c === SLOTS - 1 ? '' : c % 12 === 11 ? ' l6' : c % 2 ? ' l1' : ' l0'}" data-d="${d}" data-c="${c}" style="background:${data.presets[+data.days[d][c]].color}"></div>`;
         const now = d === np.day ? `<div class="now" style="left:${(np.min / 1440) * 100}%"></div>` : '';
         return `<div class="row${n > MAX_BLOCKS ? ' over' : ''}" data-d="${d}">
           <div class="dl${d === np.day ? ' today' : ''}">${name}</div>
@@ -305,10 +305,10 @@
   .grid{touch-action:none;user-select:none}
   .row{margin:3px 0}
   .dl{font-weight:600;color:var(--mut);font-size:12px}.dl.today{color:var(--acc)}
-  .cells{position:relative;display:grid;grid-template-columns:repeat(48,1fr);gap:1px;border-radius:7px;overflow:hidden;outline:2px solid transparent;outline-offset:1px}
+  .cells{position:relative;display:grid;grid-template-columns:repeat(48,1fr);border-radius:7px;overflow:hidden;outline:2px solid transparent;outline-offset:1px}
   .row.over .cells{outline-color:#ff453a}
   .cell{height:30px;cursor:cell}
-  .cell.h6{box-shadow:inset 2px 0 0 rgba(0,0,0,.35)}
+  .cell.l0{box-shadow:inset -1px 0 0 rgba(0,0,0,.12)}.cell.l1{box-shadow:inset -1px 0 0 rgba(0,0,0,.3)}.cell.l6{box-shadow:inset -2px 0 0 rgba(0,0,0,.45)}
   .now{position:absolute;top:0;bottom:0;width:2px;background:#fff;box-shadow:0 0 5px rgba(0,0,0,.7);pointer-events:none}
   .cnt{font-size:11px;color:var(--mut);text-align:right;font-variant-numeric:tabular-nums}.cnt.over{color:#ff453a;font-weight:700}
   .tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}.sp{flex:1}
