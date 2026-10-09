@@ -63,11 +63,12 @@ climates:
 mode: native            # native = program the valves | ha = HA calls climate.set_temperature
 # oper_mode: 1          # programming_operation_mode written after upload (bit0 = schedule)
 # z2m_base_topic: zigbee2mqtt   # only for Zigbee2MQTT valves with a non-default base topic
-# presets:              # initial presets (after the first save they live in the schedule)
-#   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
+# presets:              # edited in the card editor; defaults:
 #   - {name: Eco, temp: 19, color: "#34c759"}
 #   - {name: Night, temp: 17.5, color: "#5e5ce6"}
 #   - {name: Away, temp: 15, color: "#8e8e93"}
+#   - {name: Comfort, temp: 23, color: "#ff8a3d"}
+#   - {name: Warm, temp: 25, color: "#ff453a"}
 ```
 One card = one schedule. All valves in `climates` get the same schedule (one room).
 

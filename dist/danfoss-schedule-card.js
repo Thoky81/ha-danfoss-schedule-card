@@ -10,17 +10,18 @@
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
  * presets:                            # edited in the card editor, applied with Save & program
- *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
+ *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.7.0';
+  const VERSION = '1.7.1';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
-    { name: 'Comfort', temp: 21.5, color: '#ff8a3d' },
     { name: 'Eco', temp: 19, color: '#34c759' },
     { name: 'Night', temp: 17.5, color: '#5e5ce6' },
     { name: 'Away', temp: 15, color: '#8e8e93' },
+    { name: 'Comfort', temp: 23, color: '#ff8a3d' },
+    { name: 'Warm', temp: 25, color: '#ff453a' },
   ];
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -28,8 +29,9 @@
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const fromBlocks = (bl) => { let s = ''; bl.forEach(([start, p], i) => { const end = i + 1 < bl.length ? bl[i + 1][0] : SLOTS; s += String(p).repeat(end - start); }); return s; };
   const defaultDays = () => {
-    const wd = fromBlocks([[0, 2], [13, 0], [16, 3], [34, 0], [45, 2]]);
-    const we = fromBlocks([[0, 2], [16, 0], [26, 1], [30, 0], [46, 2]]);
+    // indexes into DEFAULT_PRESETS: 0 Eco, 1 Night, 2 Away, 3 Comfort
+    const wd = fromBlocks([[0, 1], [13, 3], [16, 2], [34, 3], [45, 1]]);
+    const we = fromBlocks([[0, 1], [16, 3], [26, 0], [30, 3], [46, 1]]);
     return [wd, wd, wd, wd, wd, we, we];
   };
   const blockCount = (day, presets) => { let n = 0, prev = null; for (const ch of day) { const t = presets[+ch]?.temp; if (t !== prev) { n++; prev = t; } } return n; };
