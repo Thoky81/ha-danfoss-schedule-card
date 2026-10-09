@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Danfoss Schedule Card</title>
+<style>
+:root{--primary-text-color:#f2f2f4;--secondary-text-color:#8e8e96;--primary-color:#0a84ff;--divider-color:#38383d;--secondary-background-color:#2a2a2e;--card-background-color:#1f1f22}
+body{margin:0;background:#141416;color:#f2f2f4;font:14px/1.4 -apple-system,BlinkMacSystemFont,system-ui,Segoe UI,Roboto,sans-serif;padding:16px}
+.wrap{max-width:760px;margin:0 auto}
+p{color:#8e8e96;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p>Preview with a simulated Home Assistant. Paint, change presets, then <b>Save &amp; program</b>. The valve status goes pending → ok.</p>
+  <danfoss-schedule-card id="card"></danfoss-schedule-card>
+</div>
+<script src="dist/danfoss-schedule-card.js"></script>
+<script>
+const now=()=>new Date().toISOString().slice(0,19);
+const states={
+  'climate.living_room_trv_1':{state:'heat',attributes:{friendly_name:'Living room TRV 1',current_temperature:21.2}},
+  'climate.living_room_trv_2':{state:'heat',attributes:{friendly_name:'Living room TRV 2',current_temperature:20.8}},
+};
+const card=document.getElementById('card');
+function push(){card.hass={states:{...states},callService};}
+async function callService(domain,svc,data){
+  const eid='pyscript.climate_schedule_'+data.schedule_id;
+  if(svc==='climate_schedule_save'){
+    const status={};data.climates.forEach(c=>status[c]={state:'pending',at:now(),msg:''});
+    states[eid]={state:'pending',attributes:{...data,status,updated:now()}};push();
+    setTimeout(()=>{const s={...states[eid].attributes.status};Object.keys(s).forEach(k=>s[k]={state:'ok',at:now(),msg:'2 day group(s)'});
+      states[eid]={state:'ok',attributes:{...states[eid].attributes,status:s}};push();},1800);
+  }
+  if(svc==='climate_schedule_push'){const a=states[eid].attributes,s={};Object.keys(a.status).forEach(k=>s[k]={state:'pending',at:now()});
+    states[eid]={state:'pending',attributes:{...a,status:s}};push();
+    setTimeout(()=>{Object.keys(s).forEach(k=>s[k]={state:'ok',at:now(),msg:'2 day group(s)'});states[eid]={state:'ok',attributes:{...a,status:{...s}}};push();},1500);}
+}
+card.setConfig({schedule_id:'living_room',title:'Living room',climates:['climate.living_room_trv_1','climate.living_room_trv_2']});
+push();
+</script>
+</body>
+</html>
