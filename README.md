@@ -44,7 +44,7 @@ Add the card from the dashboard card picker (**Danfoss Schedule Card**) and set 
 - **Schedule ID** – unique per room (e.g. `living_room`). Changing it starts a new, empty schedule.
 - **Valves** – pick the `climate.*` entities of your Danfoss Ally TRVs. All valves on one card get the same schedule.
 - **Mode** – *Native* programs the valves, *HA* lets Home Assistant set the temperature.
-- **Presets** – starting presets (name, temperature, color). Used until the first save; after that they live in the schedule and you edit them on the card (−/+ for temperature, ✎ for name and color).
+- **Presets** – name, temperature and color of each preset. Applied with **Save & program** on the card.
 
 YAML equivalent:
 
@@ -83,12 +83,19 @@ Each valve is detected automatically from its device in HA, so one card can mix 
 `mode: ha` works with any climate entity, regardless of integration.
 
 ## Using it
-- Click a preset name to pick it as the brush, then drag. The drag fills a **rectangle**: Mon→Fri × 08:00→17:00 in one move.
-- `−`/`+` on a preset changes its temperature everywhere it is used.
-- **✎** next to the presets switches to edit mode: rename a preset or click its dot to change the color (the grid previews it live). Press **✓** when done, then Save.
+The card is **view-only** by default, so a stray tap (or a swipe on mobile) can't change anything.
+
+- Press **✎ Edit schedule** to change it. Pick a preset, then drag over the grid. The drag fills a **rectangle**: Mon→Fri × 08:00→17:00 in one move.
+- **Copy Mon → Tue–Fri** copies Monday's day onto Tuesday–Friday; **Copy Sat → Sun** copies Saturday onto Sunday. Paint one day, copy it to the rest.
+- **Save & program** sends the schedule to the valves and locks the card again; **Cancel** drops the changes.
 - The `n/6` counter on each row is the number of temperature blocks that day. Danfoss stores **at most 6 per day**. If any day is over the limit, the row turns red and Save is disabled.
 - Two adjacent presets with the same temperature count as one block.
 - Valve dots: green = programmed, orange blinking = upload in progress, red = failed or valve unavailable. Hover a dot for details.
+
+### Presets
+Preset names, temperatures and colors are edited in the **card editor** (dashboard edit mode → edit the card), not on the card itself. The editor shows the presets the schedule uses now; after changing them the card shows a note and **Save & program** applies them. **Undo changes** in the editor goes back to the saved presets.
+
+New presets are added at the end. Only the last preset can be removed, and only when no block uses it (paint it over first), because removing one would shift the others.
 
 ## How the valves are kept in sync
 - On **Save**: `ClearWeeklySchedule`, then one `SetWeeklySchedule` per group of identical days (e.g. Mon–Fri + Sat–Sun = 2 commands), then `programming_operation_mode = 1`. Each valve is tried up to 3 times, 30 s apart. A red dot shows the Zigbee error (hover it); `NWK_NO_ROUTE` or timeouts mean the valve wasn't reachable: check the mesh, then press **Re-sync**.
