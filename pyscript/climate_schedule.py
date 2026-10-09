@@ -329,13 +329,45 @@ def climate_schedule_save(schedule_id=None, title=None, climates=None, presets=N
 name: Save climate schedule
 description: Store a week schedule and program the valves (called by danfoss-schedule-card).
 fields:
-  schedule_id: {description: Schedule id, required: true, example: living_room, selector: {text: }}
-  title: {description: Display name, example: Living room, selector: {text: }}
-  climates: {description: Climate entities (or {entity, ieee}), required: true, selector: {object: }}
-  presets: {description: "List of {name, temp, color}", required: true, selector: {object: }}
-  days: {description: 7 strings (Mon..Sun) of 48 preset indexes, required: true, selector: {object: }}
-  mode: {description: native = on-valve schedule, ha = HA sets temperature, example: native, selector: {select: {options: [native, ha]}}}
-  oper_mode: {description: Value for programming_operation_mode (1 = schedule), example: 1, selector: {number: {min: 0, max: 255}}}
+  schedule_id:
+    description: Schedule id
+    required: true
+    example: living_room
+    selector:
+      text:
+  title:
+    description: Display name
+    example: Living room
+    selector:
+      text:
+  climates:
+    description: "Climate entities, or {entity, ieee} objects"
+    required: true
+    selector:
+      object:
+  presets:
+    description: "List of {name, temp, color}"
+    required: true
+    selector:
+      object:
+  days:
+    description: "7 strings (Mon..Sun) of 48 preset indexes"
+    required: true
+    selector:
+      object:
+  mode:
+    description: "native = on-valve schedule, ha = HA sets the temperature"
+    example: native
+    selector:
+      select:
+        options: [native, ha]
+  oper_mode:
+    description: "Value for programming_operation_mode (1 = schedule)"
+    example: 1
+    selector:
+      number:
+        min: 0
+        max: 255
 """
     if not schedule_id or not climates:
         raise ValueError("schedule_id and climates are required")
@@ -372,7 +404,11 @@ def climate_schedule_push(schedule_id=None):
 name: Re-push climate schedule
 description: Program the valves again (all schedules if no id).
 fields:
-  schedule_id: {description: Schedule id (empty = all), example: living_room, selector: {text: }}
+  schedule_id:
+    description: "Schedule id (empty = all)"
+    example: living_room
+    selector:
+      text:
 """
     ids = [slug(schedule_id)] if schedule_id else list(SCHEDULES)
     for sid in ids:
@@ -386,7 +422,12 @@ def climate_schedule_delete(schedule_id=None):
 name: Delete climate schedule
 description: Remove a schedule and switch its valves back to manual setpoint mode.
 fields:
-  schedule_id: {description: Schedule id, required: true, example: living_room, selector: {text: }}
+  schedule_id:
+    description: Schedule id
+    required: true
+    example: living_room
+    selector:
+      text:
 """
     sid = slug(schedule_id)
     if sid not in SCHEDULES:

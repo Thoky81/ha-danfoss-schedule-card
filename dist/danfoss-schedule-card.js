@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.3
+ * danfoss-schedule-card  v1.3.1
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -12,7 +12,7 @@
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -32,6 +32,10 @@
     return [wd, wd, wd, wd, wd, we, we];
   };
   const blockCount = (day, presets) => { let n = 0, prev = null; for (const ch of day) { const t = presets[+ch]?.temp; if (t !== prev) { n++; prev = t; } } return n; };
+  const errText = (e) => {
+    const m = String((e && e.message) || e);
+    return /climate_schedule_\w+ not found/i.test(m) ? 'Backend not loaded – copy climate_schedule.py to /config/pyscript/ and reload pyscript (check the HA log for pyscript errors)' : m;
+  };
   const nowPos = () => { const d = new Date(); return { day: (d.getDay() + 6) % 7, min: d.getHours() * 60 + d.getMinutes() }; };
 
   class DanfossScheduleCard extends HTMLElement {
@@ -109,12 +113,12 @@
         });
         this._draft = null;
         this._toast(this._cfg.mode === 'ha' ? 'Saved – HA will set temperatures' : 'Saved – programming valves…');
-      } catch (e) { this._toast('Save failed: ' + (e.message || e), true); }
+      } catch (e) { this._toast('Save failed: ' + errText(e), true); }
       this._busy = false; this._render();
     }
     async _resync() {
       try { await this._hass.callService('pyscript', 'climate_schedule_push', { schedule_id: slug(this._cfg.schedule_id) }); this._toast('Re-sync started'); }
-      catch (e) { this._toast('Re-sync failed: ' + (e.message || e), true); }
+      catch (e) { this._toast('Re-sync failed: ' + errText(e), true); }
     }
     _toast(text, err = false) { this._msg = { text, err }; clearTimeout(this._mt); this._mt = setTimeout(() => { this._msg = null; this._render(); }, 5000); this._render(); }
     _presetInput(inp, commit) {
