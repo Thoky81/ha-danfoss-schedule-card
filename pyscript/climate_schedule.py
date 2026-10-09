@@ -40,15 +40,18 @@ SLOT_MIN = 30
 MAX_BLOCKS = 6               # Danfoss: 6 transitions per day
 DAY_BITS = [2, 4, 8, 16, 32, 64, 1]  # Mon..Sun -> ZCL SeqDayOfWeek (Sun = bit0)
 RETRIES = 3
+RETRY_WAIT = 30              # s between attempts, gives the mesh time to find a route again
 DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 Z2M_DEFAULT_BASE = "zigbee2mqtt"
 Z2M_OPER_MODES = {0: "setpoint", 1: "schedule", 3: "schedule_with_preheat", 4: "eco"}
-Z2M_GAP = 6                  # s between messages: Z2M handles MQTT messages in parallel, the valve is slow to answer
+Z2M_GAP = 12                 # s per message: longer than Z2M's 10 s command timeout, so a failure is reported before the next one
 Z2M_CONFIRM_TRIES = 8        # x 5 s waiting for the valve to report the new programming_operation_mode
 NIGHTLY_RESYNC = "cron(15 3 * * *)"
 
 SCHEDULES = {}
 AVAIL_TRIGGERS = {}
+LOG_TRIGGERS = {}
+Z2M_ERRORS = {}              # ieee / friendly name -> last failure Z2M reported on <base>/bridge/logging
 HA_LAST = {}
 
 
@@ -278,19 +281,51 @@ def z2m_confirm(s, device, eid, want):
     raise RuntimeError(f"valve stayed in '{got}' mode (expected '{want}'), see the Zigbee2MQTT log")
 
 
-def program_z2m(s, device, groups, eid):
-    # one message at a time with a pause: Z2M does not queue them, and the Ally
-    # refuses schedule mode until the weekly schedule is stored
-    z2m_set(s, device, {"clear_weekly_schedule": ""})
+def make_log_trigger(base):
+    """Z2M reports failed commands only in its log, which it also publishes on <base>/bridge/logging."""
+    @mqtt_trigger(f"{base}/bridge/logging")
+    def _z2m_log(payload_obj=None, **kwargs):
+        if not isinstance(payload_obj, dict) or payload_obj.get("level") != "error":
+            return
+        msg = str(payload_obj.get("message", ""))
+        if "failed" not in msg:
+            return
+        m = re.search(r"(0x[0-9a-fA-F]{16})", msg)
+        if m:
+            Z2M_ERRORS[m.group(1).lower()] = msg
+        m = re.search(r"to '([^']+)' failed", msg)
+        if m:
+            Z2M_ERRORS[m.group(1).lower()] = msg
+    return _z2m_log
+
+
+def z2m_error_cause(msg):
+    m = re.search(r"failed \((.+)\)'?\s*$", msg)
+    return (m.group(1) if m else msg)[-160:]
+
+
+def z2m_step(s, device, payload):
+    """Send one set message and wait out Z2M's command timeout; raise if Z2M logged a failure."""
+    key = str(device).lower()
+    Z2M_ERRORS.pop(key, None)
+    z2m_set(s, device, payload)
     task.sleep(Z2M_GAP)
+    err = Z2M_ERRORS.pop(key, None)
+    if err:
+        raise RuntimeError(f"Zigbee error on {list(payload)[0]}: {z2m_error_cause(err)}")
+
+
+def program_z2m(s, device, groups, eid):
+    # one message at a time: Z2M does not queue them, and the Ally refuses
+    # schedule mode until the weekly schedule is stored
+    z2m_step(s, device, {"clear_weekly_schedule": ""})
     for key, days in groups.items():
         transitions = []
         for b in json.loads(key):
             transitions.append({"transitionTime": int(b[0]), "heatSetpoint": float(b[1])})
-        z2m_set(s, device, {"weekly_schedule": {"dayofweek": [DAY_NAMES[d] for d in days], "transitions": transitions}})
-        task.sleep(Z2M_GAP)
+        z2m_step(s, device, {"weekly_schedule": {"dayofweek": [DAY_NAMES[d] for d in days], "transitions": transitions}})
     want = z2m_oper_mode(s.get("oper_mode", 1))
-    z2m_set(s, device, {"programming_operation_mode": want})
+    z2m_step(s, device, {"programming_operation_mode": want})
     return z2m_confirm(s, device, eid, want)
 
 
@@ -320,7 +355,7 @@ def push_valve(sid, c):
         except Exception as e:
             last_err = str(e)
             log.warning(f"climate_schedule {sid}: {eid} attempt {attempt + 1} failed: {e}")
-            task.sleep(10)
+            task.sleep(RETRY_WAIT)
     set_status(sid, eid, "error", last_err[:200])
     return False
 
@@ -393,14 +428,20 @@ def make_avail_trigger(sid, eid):
 
 
 def setup_triggers():
-    global AVAIL_TRIGGERS
+    global AVAIL_TRIGGERS, LOG_TRIGGERS
     trig = {}
+    logs = {}
     for sid, s in SCHEDULES.items():
         if s.get("mode") == "native":
             for c in s["climates"]:
                 eid = ent_id(c)
                 trig[f"{sid}|{eid}"] = make_avail_trigger(sid, eid)
+                if resolve_target(c)[0] == "z2m":
+                    base = s.get("z2m_base_topic") or Z2M_DEFAULT_BASE
+                    if base not in logs:
+                        logs[base] = LOG_TRIGGERS.get(base) or make_log_trigger(base)
     AVAIL_TRIGGERS = trig
+    LOG_TRIGGERS = logs
 
 
 @time_trigger("startup")

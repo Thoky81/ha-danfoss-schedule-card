@@ -77,6 +77,7 @@ Each valve is detected automatically from its device in HA, so one card can mix 
 |---|---|---|
 | Sent with | `zha.issue_zigbee_cluster_command` | `mqtt.publish` to `<base_topic>/<ieee>/set` |
 | Green dot means | the valve acknowledged every command | the valve reports `programming_operation_mode = schedule` (read back from Z2M's entity) |
+| Errors | reported by ZHA | read from Z2M's `<base_topic>/bridge/logging` (e.g. `NWK_NO_ROUTE`), shown on the red dot |
 | Needs | ZHA integration | MQTT integration; Z2M's base topic in `z2m_base_topic` if it isn't `zigbee2mqtt` |
 
 `mode: ha` works with any climate entity, regardless of integration.
@@ -90,7 +91,7 @@ Each valve is detected automatically from its device in HA, so one card can mix 
 - Valve dots: green = programmed, orange blinking = upload in progress, red = failed or valve unavailable. Hover a dot for details.
 
 ## How the valves are kept in sync
-- On **Save**: `ClearWeeklySchedule`, then one `SetWeeklySchedule` per group of identical days (e.g. Mon–Fri + Sat–Sun = 2 commands), then `programming_operation_mode = 1`. Each valve is tried up to 3 times.
+- On **Save**: `ClearWeeklySchedule`, then one `SetWeeklySchedule` per group of identical days (e.g. Mon–Fri + Sat–Sun = 2 commands), then `programming_operation_mode = 1`. Each valve is tried up to 3 times, 30 s apart. A red dot shows the Zigbee error (hover it); `NWK_NO_ROUTE` or timeouts mean the valve wasn't reachable: check the mesh, then press **Re-sync**.
 - The Ally **loses its schedule after a battery change or OTA**, so the schedule is re-pushed automatically:
   - when a valve comes back from `unavailable` (60 s later)
   - every night at 03:15
