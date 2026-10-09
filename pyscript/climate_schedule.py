@@ -43,6 +43,8 @@ RETRIES = 3
 DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 Z2M_DEFAULT_BASE = "zigbee2mqtt"
 Z2M_OPER_MODES = {0: "setpoint", 1: "schedule", 3: "schedule_with_preheat", 4: "eco"}
+Z2M_GAP = 6                  # s between messages: Z2M handles MQTT messages in parallel, the valve is slow to answer
+Z2M_CONFIRM_TRIES = 8        # x 5 s waiting for the valve to report the new programming_operation_mode
 NIGHTLY_RESYNC = "cron(15 3 * * *)"
 
 SCHEDULES = {}
@@ -240,16 +242,56 @@ def z2m_oper_mode(value):
     return Z2M_OPER_MODES.get(int(value), "schedule")
 
 
-def program_z2m(s, device, groups):
+def z2m_get(s, device, key):
+    base = s.get("z2m_base_topic") or Z2M_DEFAULT_BASE
+    service.call("mqtt", "publish", blocking=True, topic=f"{base}/{device}/get", payload=json.dumps({key: ""}))
+
+
+def mode_entity(eid):
+    """The select/sensor Z2M creates for programming_operation_mode on the same device."""
+    reg = er.async_get(hass)
+    ent = reg.async_get(eid)
+    if ent is None or ent.device_id is None:
+        return None
+    for e in er.async_entries_for_device(reg, ent.device_id):
+        if "programming_operation_mode" in e.entity_id or str(e.unique_id).endswith("_programming_operation_mode_zigbee2mqtt"):
+            return e.entity_id
+    return None
+
+
+def z2m_confirm(s, device, eid, want):
+    """True = valve reports `want`, None = nothing to check against. Raises if the valve stays in another mode."""
+    me = mode_entity(eid)
+    if me is None:
+        return None
+    got = None
+    for i in range(Z2M_CONFIRM_TRIES):
+        task.sleep(5)
+        if i == 2:
+            z2m_get(s, device, "programming_operation_mode")  # ask the valve in case Z2M did not publish it
+        try:
+            got = state.get(me)
+        except NameError:
+            return None
+        if got == want:
+            return True
+    raise RuntimeError(f"valve stayed in '{got}' mode (expected '{want}'), see the Zigbee2MQTT log")
+
+
+def program_z2m(s, device, groups, eid):
+    # one message at a time with a pause: Z2M does not queue them, and the Ally
+    # refuses schedule mode until the weekly schedule is stored
     z2m_set(s, device, {"clear_weekly_schedule": ""})
-    task.sleep(1)
+    task.sleep(Z2M_GAP)
     for key, days in groups.items():
         transitions = []
         for b in json.loads(key):
             transitions.append({"transitionTime": int(b[0]), "heatSetpoint": float(b[1])})
         z2m_set(s, device, {"weekly_schedule": {"dayofweek": [DAY_NAMES[d] for d in days], "transitions": transitions}})
-        task.sleep(1)
-    z2m_set(s, device, {"programming_operation_mode": z2m_oper_mode(s.get("oper_mode", 1))})
+        task.sleep(Z2M_GAP)
+    want = z2m_oper_mode(s.get("oper_mode", 1))
+    z2m_set(s, device, {"programming_operation_mode": want})
+    return z2m_confirm(s, device, eid, want)
 
 
 def push_valve(sid, c):
@@ -271,8 +313,8 @@ def push_valve(sid, c):
                 program_zha(s, target, groups)
                 set_status(sid, eid, "ok", f"{len(groups)} day group(s) via ZHA")
             else:
-                program_z2m(s, target, groups)
-                set_status(sid, eid, "ok", f"{len(groups)} day group(s) sent via Z2M")
+                confirmed = program_z2m(s, target, groups, eid)
+                set_status(sid, eid, "ok", f"{len(groups)} day group(s) via Z2M" + ("" if confirmed else ", mode not confirmed"))
             log.info(f"climate_schedule {sid}: programmed {eid} ({kind} {target})")
             return True
         except Exception as e:

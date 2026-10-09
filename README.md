@@ -76,7 +76,7 @@ Each valve is detected automatically from its device in HA, so one card can mix 
 | | ZHA | Zigbee2MQTT |
 |---|---|---|
 | Sent with | `zha.issue_zigbee_cluster_command` | `mqtt.publish` to `<base_topic>/<ieee>/set` |
-| Green dot means | the valve acknowledged every command | the MQTT messages were sent (Z2M does not report back) |
+| Green dot means | the valve acknowledged every command | the valve reports `programming_operation_mode = schedule` (read back from Z2M's entity) |
 | Needs | ZHA integration | MQTT integration; Z2M's base topic in `z2m_base_topic` if it isn't `zigbee2mqtt` |
 
 `mode: ha` works with any climate entity, regardless of integration.
