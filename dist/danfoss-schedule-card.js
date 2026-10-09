@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.1
+ * danfoss-schedule-card  v1.2
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -12,7 +12,7 @@
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -55,11 +55,13 @@
       const old = this._hass;
       this._hass = h;
       const watch = [this._eid, ...this._climates()];
-      if (!old || watch.some((id) => old.states[id] !== h.states[id])) { if (!this._painting) this._render(); }
+      if (!old || watch.some((id) => old.states[id] !== h.states[id])) { if (!this._hold()) this._render(); }
     }
 
-    connectedCallback() { this._timer = setInterval(() => { if (!this._painting) this._render(); }, 60000); }
+    connectedCallback() { this._timer = setInterval(() => { if (!this._hold()) this._render(); }, 60000); }
     disconnectedCallback() { clearInterval(this._timer); }
+
+    _hold() { const ae = this.shadowRoot && this.shadowRoot.activeElement; return this._painting || !!(ae && ae.tagName === 'INPUT'); }
 
     /* ---------- data ---------- */
     _entity() { return this._hass && this._hass.states[this._eid]; }
@@ -115,6 +117,22 @@
       catch (e) { this._toast('Re-sync failed: ' + (e.message || e), true); }
     }
     _toast(text, err = false) { this._msg = { text, err }; clearTimeout(this._mt); this._mt = setTimeout(() => { this._msg = null; this._render(); }, 5000); this._render(); }
+    _presetInput(inp, commit) {
+      const i = +inp.dataset.i, d = this._edit(), p = d.presets[i];
+      if (inp.classList.contains('pc')) {
+        p.color = inp.value;
+        if (!commit) { // live preview without re-render, keeps the native picker open
+          inp.closest('.chip').style.setProperty('--c', p.color);
+          this.shadowRoot.querySelectorAll('.cell').forEach((c) => { if (+d.days[+c.dataset.d][+c.dataset.c] === i) c.style.background = p.color; });
+          return;
+        }
+      } else {
+        const v = inp.value.trim();
+        if (!commit) { if (v) p.name = v; inp.size = Math.max(4, inp.value.length); return; }
+        p.name = v || `Preset ${i + 1}`;
+      }
+      setTimeout(() => this._render()); // after focus has moved (Tab), so _render can restore it
+    }
     _copy(from, to) { const d = this._edit(); to.forEach((i) => (d.days[i] = d.days[from])); this._render(); }
 
     /* ---------- painting ---------- */
@@ -159,11 +177,14 @@
       const status = ent?.attributes.status || {};
       const mode = this._cfg.mode;
 
+      const ep = this._editP;
       const chips = data.presets.map((p, i) => `
-        <div class="chip ${i === this._sel ? 'on' : ''}" data-i="${i}" style="--c:${p.color}">
-          <span class="dot"></span><span class="nm">${esc(p.name)}</span>
+        <div class="chip ${i === this._sel ? 'on' : ''}${ep ? ' edit' : ''}" data-i="${i}" style="--c:${p.color}">
+          ${ep ? `<input type="color" class="pc" data-i="${i}" value="${esc(/^#[0-9a-f]{6}$/i.test(p.color) ? p.color : '#888888')}" title="Color">
+            <input type="text" class="pn" data-i="${i}" value="${esc(p.name)}" maxlength="20" size="${Math.max(4, p.name.length)}" title="Name">`
+          : `<span class="dot"></span><span class="nm">${esc(p.name)}</span>`}
           <button class="tb" data-i="${i}" data-d="-1">−</button><span class="tv">${(+p.temp).toFixed(1)}°</span><button class="tb" data-i="${i}" data-d="1">+</button>
-        </div>`).join('');
+        </div>`).join('') + `<button class="tb pe${ep ? ' on' : ''}" data-a="pedit" title="${ep ? 'Done' : 'Edit preset names and colors'}">${ep ? '✓' : '✎'}</button>`;
 
       const rows = DAYS.map((name, d) => {
         const n = blockCount(data.days[d], data.presets);
@@ -189,6 +210,8 @@
 
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
 
+      const ae = this.shadowRoot.activeElement;
+      const keep = ae && ae.tagName === 'INPUT' ? { q: `input.${ae.classList[0]}[data-i="${ae.dataset.i}"]`, s: ae.selectionStart, e: ae.selectionEnd } : null;
       this.shadowRoot.innerHTML = `<style>${CSS}</style>
       <ha-card>
         <div class="head">
@@ -216,6 +239,7 @@
 
       const root = this.shadowRoot;
       root.querySelectorAll('.chip').forEach((el) => el.addEventListener('click', (e) => {
+        if (e.target.tagName === 'INPUT') return;
         const b = e.target.closest('.tb'), i = +el.dataset.i;
         if (b) { const d = this._edit(); d.presets[i].temp = Math.max(5, Math.min(30, +d.presets[i].temp + 0.5 * +b.dataset.d)); }
         else this._sel = i;
@@ -226,9 +250,16 @@
         if (a === 'wd') this._copy(0, [1, 2, 3, 4]);
         else if (a === 'we') this._copy(5, [6]);
         else if (a === 'revert') { this._draft = null; this._render(); }
+        else if (a === 'pedit') { this._editP = !this._editP; this._render(); }
         else if (a === 'resync') this._resync();
         else if (a === 'save') this._save();
       }));
+      root.querySelectorAll('.pn, .pc').forEach((inp) => {
+        inp.addEventListener('input', () => this._presetInput(inp, false));
+        inp.addEventListener('change', () => this._presetInput(inp, true));
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+      });
+      if (keep) { const el = root.querySelector(keep.q); if (el) { el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch (_) { /* color input */ } } }
       this._bindGrid();
     }
   }
@@ -249,6 +280,12 @@
   .nm{font-size:13px}.tv{font-variant-numeric:tabular-nums;min-width:40px;text-align:center;font-weight:600;font-size:13px}
   .tb{border:0;background:transparent;color:var(--mut);width:24px;height:24px;border-radius:7px;cursor:pointer;font-size:16px;line-height:1}
   .tb:hover{background:var(--ln);color:var(--txt)}
+  .chip.edit{padding-left:5px;cursor:default}
+  .pc{width:22px;height:22px;border:0;padding:0;background:none;cursor:pointer;flex:none}
+  .pc::-webkit-color-swatch-wrapper{padding:0}.pc::-webkit-color-swatch{border:0;border-radius:50%}.pc::-moz-color-swatch{border:0;border-radius:50%}
+  .pn{font:inherit;font-size:13px;color:var(--txt);background:transparent;border:0;border-bottom:1px dashed var(--mut);padding:2px 0;min-width:3ch;outline:none}
+  .pn:focus{border-bottom-color:var(--acc)}
+  .pe{align-self:center}.pe.on{color:var(--acc);font-weight:700}
   .ruler,.row{display:grid;grid-template-columns:34px 1fr 34px;align-items:center;column-gap:6px}
   .ticks{position:relative;height:14px;color:var(--mut);font-size:10px}
   .ticks span{position:absolute;transform:translateX(-50%)}.ticks span:first-child{transform:none}.ticks span:last-child{transform:translateX(-100%)}
@@ -373,7 +410,7 @@
       const id = this._cfg.schedule_id;
       const saved = !!(id && this._hass && this._hass.states['pyscript.climate_schedule_' + slug(id)]);
       note.textContent = saved
-        ? 'This schedule is already saved, so these presets are ignored. Change temperatures with −/+ on the card.'
+        ? 'This schedule is already saved, so these presets are ignored. Edit them on the card with ✎.'
         : 'Starting presets, used until the first save. After that they are stored with the schedule.';
       note.classList.toggle('warn', saved);
     }

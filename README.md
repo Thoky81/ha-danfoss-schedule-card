@@ -44,7 +44,7 @@ Add the card from the dashboard card picker (**Danfoss Schedule Card**) and set 
 - **Schedule ID** – unique per room (e.g. `living_room`). Changing it starts a new, empty schedule.
 - **Valves** – pick the `climate.*` entities of your Danfoss Ally TRVs. All valves on one card get the same schedule.
 - **Mode** – *Native* programs the valves, *HA* lets Home Assistant set the temperature.
-- **Presets** – starting presets (name, temperature, color). Used until the first save; after that they live in the schedule and you change temperatures with −/+ on the card.
+- **Presets** – starting presets (name, temperature, color). Used until the first save; after that they live in the schedule and you edit them on the card (−/+ for temperature, ✎ for name and color).
 
 YAML equivalent:
 
@@ -70,6 +70,7 @@ One card = one schedule. All valves in `climates` get the same schedule (one roo
 ## Using it
 - Click a preset name to pick it as the brush, then drag. The drag fills a **rectangle**: Mon→Fri × 08:00→17:00 in one move.
 - `−`/`+` on a preset changes its temperature everywhere it is used.
+- **✎** next to the presets switches to edit mode: rename a preset or click its dot to change the color (the grid previews it live). Press **✓** when done, then Save.
 - The `n/6` counter on each row is the number of temperature blocks that day. Danfoss stores **at most 6 per day**. If any day is over the limit, the row turns red and Save is disabled.
 - Two adjacent presets with the same temperature count as one block.
 - Valve dots: green = programmed, orange blinking = upload in progress, red = failed or valve unavailable. Hover a dot for details.
