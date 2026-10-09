@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.0
+ * danfoss-schedule-card  v1.1
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -12,8 +12,8 @@
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.0.0';
-  const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6;
+  const VERSION = '1.1.0';
+  const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
     { name: 'Comfort', temp: 21.5, color: '#ff8a3d' },
@@ -36,6 +36,7 @@
 
   class DanfossScheduleCard extends HTMLElement {
     static getStubConfig() { return { schedule_id: 'living_room', title: 'Living room', climates: [] }; }
+    static getConfigElement() { return document.createElement('danfoss-schedule-card-editor'); }
     getCardSize() { return 7; }
     getGridOptions() { return { columns: 12, min_columns: 6, rows: 'auto' }; }
 
@@ -63,7 +64,12 @@
     /* ---------- data ---------- */
     _entity() { return this._hass && this._hass.states[this._eid]; }
     _saved() { const e = this._entity(); return e && Array.isArray(e.attributes.days) ? { presets: e.attributes.presets, days: e.attributes.days } : null; }
-    _data() { if (this._draft) return this._draft; const s = this._saved(); return s ? s : { presets: this._cfg.presets || DEFAULT_PRESETS, days: defaultDays() }; }
+    _data() {
+      if (this._draft) return this._draft;
+      const s = this._saved(); if (s) return s;
+      const presets = this._cfg.presets && this._cfg.presets.length ? this._cfg.presets : DEFAULT_PRESETS;
+      return { presets, days: defaultDays().map((d) => d.replace(/./g, (ch) => (+ch < presets.length ? ch : '0'))) };
+    }
     _edit() { if (!this._draft) this._draft = clone(this._data()); return this._draft; }
     _climates() {
       const c = (this._cfg && this._cfg.climates && this._cfg.climates.length) ? this._cfg.climates : (this._entity()?.attributes.climates || []);
@@ -273,6 +279,136 @@
   @media (max-width:500px){.cell{height:24px}.nowt b{font-size:20px}}
   `;
 
+  /* ---------- visual editor ---------- */
+  const EDITOR_SCHEMA = [
+    { name: 'schedule_id', required: true, selector: { text: {} } },
+    { name: 'title', selector: { text: {} } },
+    { name: 'climates', selector: { entity: { multiple: true, filter: { domain: 'climate' } } } },
+    { name: 'mode', selector: { select: { mode: 'dropdown', options: [
+      { value: 'native', label: 'Native – program the valves' },
+      { value: 'ha', label: 'HA – Home Assistant sets the temperature' },
+    ] } } },
+    { name: 'oper_mode', selector: { number: { min: 0, max: 255, mode: 'box' } } },
+  ];
+  const EDITOR_LABELS = {
+    schedule_id: ['Schedule ID', 'Unique per room. Changing it starts a new, empty schedule.'],
+    title: ['Title'],
+    climates: ['Valves', 'All valves on this card get the same schedule.'],
+    mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
+    oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
+  };
+  const PALETTE = ['#ff8a3d', '#34c759', '#5e5ce6', '#8e8e93', '#ff453a', '#0a84ff', '#ffd60a', '#bf5af2'];
+
+  class DanfossScheduleCardEditor extends HTMLElement {
+    setConfig(cfg) { this._cfg = { ...cfg }; this._render(); }
+    set hass(h) { this._hass = h; if (this._form) { this._form.hass = h; this._renderNote(); } }
+
+    _emit(cfg) {
+      this._cfg = cfg;
+      this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
+    }
+    _presets() { return this._cfg.presets && this._cfg.presets.length ? this._cfg.presets : DEFAULT_PRESETS; }
+    /* remember what is on screen so the setConfig echo does not rebuild the inputs (keeps focus) */
+    _setPresets(list) { this._shown = JSON.stringify(list); this._emit({ ...this._cfg, presets: list }); }
+
+    _formChanged(v) {
+      const ieee = {};
+      (this._cfg.climates || []).forEach((x) => { if (typeof x !== 'string') ieee[x.entity] = x; });
+      const cfg = { ...this._cfg };
+      for (const { name } of EDITOR_SCHEMA) {
+        const val = v[name];
+        if (val === undefined || val === null || val === '' || (Array.isArray(val) && !val.length)) delete cfg[name];
+        else cfg[name] = val;
+      }
+      if (cfg.climates) cfg.climates = cfg.climates.map((id) => ieee[id] || id); // keep {entity, ieee} overrides
+      this._emit(cfg);
+    }
+
+    _render() {
+      if (!this._cfg) return;
+      if (!this.shadowRoot) this._build();
+      this._form.hass = this._hass;
+      this._form.data = { mode: 'native', ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
+      this._renderNote();
+      if (JSON.stringify(this._presets()) !== this._shown) this._renderPresets();
+    }
+
+    _build() {
+      const root = this.attachShadow({ mode: 'open' });
+      root.innerHTML = `<style>${EDITOR_CSS}</style>
+        <ha-form></ha-form>
+        <div class="sec">Presets</div>
+        <div class="note"></div>
+        <div class="plist"></div>
+        <button class="add">+ Add preset</button>`;
+      this._form = root.querySelector('ha-form');
+      this._form.schema = EDITOR_SCHEMA;
+      this._form.computeLabel = (s) => EDITOR_LABELS[s.name]?.[0] ?? s.name;
+      this._form.computeHelper = (s) => EDITOR_LABELS[s.name]?.[1];
+      this._form.addEventListener('value-changed', (e) => this._formChanged(e.detail.value));
+
+      const pl = root.querySelector('.plist');
+      pl.addEventListener('input', (e) => {
+        const k = e.target.dataset.k; if (!k) return;
+        const i = +e.target.closest('.pr').dataset.i, list = clone(this._presets());
+        if (k === 'temp') { if (e.target.value === '' || isNaN(+e.target.value)) return; list[i].temp = +e.target.value; }
+        else list[i][k] = e.target.value;
+        this._setPresets(list);
+      });
+      pl.addEventListener('click', (e) => {
+        const b = e.target.closest('.del'); if (!b) return;
+        const list = clone(this._presets()); list.splice(+b.dataset.i, 1);
+        this._setPresets(list); this._renderPresets();
+      });
+      root.querySelector('.add').addEventListener('click', () => {
+        const list = clone(this._presets());
+        if (list.length >= MAX_PRESETS) return;
+        list.push({ name: `Preset ${list.length + 1}`, temp: 20, color: PALETTE[list.length % PALETTE.length] });
+        this._setPresets(list); this._renderPresets();
+      });
+    }
+
+    _renderNote() {
+      const note = this.shadowRoot && this.shadowRoot.querySelector('.note'); if (!note) return;
+      const id = this._cfg.schedule_id;
+      const saved = !!(id && this._hass && this._hass.states['pyscript.climate_schedule_' + slug(id)]);
+      note.textContent = saved
+        ? 'This schedule is already saved, so these presets are ignored. Change temperatures with −/+ on the card.'
+        : 'Starting presets, used until the first save. After that they are stored with the schedule.';
+      note.classList.toggle('warn', saved);
+    }
+
+    _renderPresets() {
+      const list = this._presets();
+      this._shown = JSON.stringify(list);
+      this.shadowRoot.querySelector('.plist').innerHTML = list.map((p, i) => `
+        <div class="pr" data-i="${i}">
+          <input type="color" data-k="color" value="${esc(p.color)}" title="Color">
+          <input type="text" data-k="name" value="${esc(p.name)}" placeholder="Name">
+          <input type="number" data-k="temp" value="${esc(p.temp)}" min="5" max="30" step="0.5"><span class="u">°C</span>
+          <button class="del" data-i="${i}" title="Remove" ${list.length <= 1 ? 'disabled' : ''}>✕</button>
+        </div>`).join('');
+      this.shadowRoot.querySelector('.add').disabled = list.length >= MAX_PRESETS;
+    }
+  }
+
+  const EDITOR_CSS = `
+  :host{display:block}
+  .sec{font-weight:500;margin:24px 0 2px}
+  .note{font-size:12px;color:var(--secondary-text-color);margin-bottom:8px}
+  .note.warn{color:var(--warning-color,#ff9f0a)}
+  .pr{display:flex;align-items:center;gap:8px;margin:6px 0}
+  input{font:inherit;color:var(--primary-text-color);background:var(--secondary-background-color);border:1px solid var(--divider-color);border-radius:6px;padding:6px 8px;box-sizing:border-box;height:36px}
+  input[type=color]{width:40px;padding:2px;cursor:pointer;flex:none}
+  input[type=text]{flex:1;min-width:0}
+  input[type=number]{width:76px;flex:none}
+  .u{color:var(--secondary-text-color);font-size:13px}
+  button{font:inherit;cursor:pointer;border:1px solid var(--divider-color);background:transparent;color:var(--primary-text-color);border-radius:6px;padding:6px 10px}
+  button[disabled]{opacity:.4;cursor:default}
+  .add{margin-top:4px}
+  `;
+
+  if (!customElements.get('danfoss-schedule-card-editor')) customElements.define('danfoss-schedule-card-editor', DanfossScheduleCardEditor);
   if (!customElements.get('danfoss-schedule-card')) customElements.define('danfoss-schedule-card', DanfossScheduleCard);
   window.customCards = window.customCards || [];
   if (!window.customCards.some((c) => c.type === 'danfoss-schedule-card'))

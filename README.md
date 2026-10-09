@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/Thoky81/ha-danfoss-schedule-card/main/images/icon.png" width="96" align="right" alt="">
+
 # Danfoss Ally week schedule (ZHA + pyscript)
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
@@ -37,6 +39,14 @@ Services: `pyscript.climate_schedule_save`, `pyscript.climate_schedule_push`, `p
 2. Settings → Dashboards → ⋮ Resources → add `/local/danfoss-schedule-card.js?v=1` (JavaScript module)
 
 ### Configuration
+Add the card from the dashboard card picker (**Danfoss Schedule Card**) and set it up in the visual editor:
+
+- **Schedule ID** – unique per room (e.g. `living_room`). Changing it starts a new, empty schedule.
+- **Valves** – pick the `climate.*` entities of your Danfoss Ally TRVs. All valves on one card get the same schedule.
+- **Mode** – *Native* programs the valves, *HA* lets Home Assistant set the temperature.
+- **Presets** – starting presets (name, temperature, color). Used until the first save; after that they live in the schedule and you change temperatures with −/+ on the card.
+
+YAML equivalent:
 
 ```yaml
 type: custom:danfoss-schedule-card
