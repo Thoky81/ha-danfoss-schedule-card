@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.2
+ * danfoss-schedule-card  v1.3
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -12,7 +12,7 @@
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -197,7 +197,8 @@
           <div class="cnt${n > MAX_BLOCKS ? ' over' : ''}" data-d="${d}">${n}/${MAX_BLOCKS}</div></div>`;
       }).join('');
 
-      const ticks = [0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${h}</span>`).join('');
+      /* every hour is rendered; CSS container queries hide some when the card is narrow */
+      const ticks = Array.from({ length: 25 }, (_, h) => `<span class="hr${h % 2 ? '' : ' m2'}${h % 3 ? '' : ' m3'}${h % 6 ? '' : ' m6'}" style="left:${(h / 24) * 100}%">${h}</span>`).join('');
 
       const valves = this._climates().map((id) => {
         const st = this._hass?.states[id], s = status[id];
@@ -266,7 +267,7 @@
 
   const CSS = `
   :host{--bg2:var(--secondary-background-color,#2a2a2e);--txt:var(--primary-text-color,#f2f2f4);--mut:var(--secondary-text-color,#8e8e96);--acc:var(--primary-color,#0a84ff);--ln:var(--divider-color,#38383d)}
-  ha-card{display:block;padding:16px;position:relative;color:var(--txt);overflow:hidden;background:var(--ha-card-background,var(--card-background-color,#1f1f22));border-radius:var(--ha-card-border-radius,12px)}
+  ha-card{display:block;container-type:inline-size;padding:16px;position:relative;color:var(--txt);overflow:hidden;background:var(--ha-card-background,var(--card-background-color,#1f1f22));border-radius:var(--ha-card-border-radius,12px)}
   .head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
   .ic{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-size:20px;background:rgba(255,138,61,.16);flex:none}
   .ttl{min-width:0}.t{font-weight:600;font-size:16px}.s{color:var(--mut);font-size:12px}
@@ -289,6 +290,10 @@
   .ruler,.row{display:grid;grid-template-columns:34px 1fr 34px;align-items:center;column-gap:6px}
   .ticks{position:relative;height:14px;color:var(--mut);font-size:10px}
   .ticks span{position:absolute;transform:translateX(-50%)}.ticks span:first-child{transform:none}.ticks span:last-child{transform:translateX(-100%)}
+  .ticks .hr{display:none}.ticks .m6{display:block}
+  @container (min-width:300px){.ticks .m3{display:block}}
+  @container (min-width:380px){.ticks .m3{display:none}.ticks .m2{display:block}}
+  @container (min-width:600px){.ticks .hr{display:block}}
   .grid{touch-action:none;user-select:none}
   .row{margin:3px 0}
   .dl{font-weight:600;color:var(--mut);font-size:12px}.dl.today{color:var(--acc)}
