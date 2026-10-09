@@ -195,17 +195,12 @@ def is_unavailable(eid):
 
 # ---------------------------------------------------------------- ZHA
 def zha_cmd(ieee, command, params=None):
-    kw = {
-        "ieee": ieee,
-        "endpoint_id": ENDPOINT,
-        "cluster_id": THERMOSTAT,
-        "cluster_type": "in",
-        "command": command,
-        "command_type": "server",
-    }
-    if params is not None:
-        kw["params"] = params
-    service.call("zha", "issue_zigbee_cluster_command", blocking=True, **kw)
+    # ZHA requires `params` (or `args`) even for commands without fields, e.g. ClearWeeklySchedule
+    service.call(
+        "zha", "issue_zigbee_cluster_command", blocking=True,
+        ieee=ieee, endpoint_id=ENDPOINT, cluster_id=THERMOSTAT, cluster_type="in",
+        command=command, command_type="server", params=params or {},
+    )
 
 
 def program_zha(s, ieee, groups):
