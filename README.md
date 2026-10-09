@@ -52,6 +52,7 @@ YAML equivalent:
 type: custom:danfoss-schedule-card
 schedule_id: living_room
 title: Living room
+icon: mdi:thermometer    # any mdi: icon, or an emoji
 climates:
   - climate.living_room_trv_1
   - climate.living_room_trv_2

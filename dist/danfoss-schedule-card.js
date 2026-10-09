@@ -5,6 +5,7 @@
  * type: custom:danfoss-schedule-card
  * schedule_id: living_room            # required
  * title: Living room
+ * icon: mdi:thermometer               # any mdi: icon, or an emoji
  * climates:                           # climate entities (or {entity, ieee} / {entity, z2m})
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
@@ -12,7 +13,7 @@
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.5.0';
+  const VERSION = '1.6.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -207,6 +208,7 @@
 
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
 
+      const icon = this._cfg.icon || 'mdi:thermometer';
       const saveBtn = `<button class="btn pri" data-a="save" ${invalid || this._busy || (!dirty && ent) ? 'disabled' : ''}>${this._busy ? 'Saving…' : mode === 'ha' ? 'Save' : 'Save & program'}</button>`;
       const tools = ed ? `
           <button class="btn" data-a="wd" title="Copy Monday's schedule to Tuesday–Friday">Copy Mon → Tue–Fri</button>
@@ -221,7 +223,7 @@
       this.shadowRoot.innerHTML = `<style>${CSS}</style>
       <ha-card>
         <div class="head">
-          <div class="ic">🌡️</div>
+          <div class="ic">${icon.includes(':') ? `<ha-icon icon="${esc(icon)}"></ha-icon>` : esc(icon)}</div>
           <div class="ttl"><div class="t">${esc(this._cfg.title)}</div>
             <div class="s"><span class="badge ${mode}">${mode === 'ha' ? 'HA-driven' : 'On-valve schedule'}</span> ${savedTxt}</div></div>
           <div class="nowt"><b style="color:${data.presets[cur.p].color}">${(+cur.t).toFixed(1)}°</b><div class="s">${esc(data.presets[cur.p].name)}${cur.until ? ' until ' + cur.until : ''}</div></div>
@@ -255,10 +257,11 @@
   }
 
   const CSS = `
-  :host{--sep:var(--ha-card-background,var(--card-background-color,#1f1f22));--bg2:var(--secondary-background-color,#2a2a2e);--txt:var(--primary-text-color,#f2f2f4);--mut:var(--secondary-text-color,#8e8e96);--acc:var(--primary-color,#0a84ff);--ln:var(--divider-color,#38383d)}
+  :host{--bg2:var(--secondary-background-color,#2a2a2e);--txt:var(--primary-text-color,#f2f2f4);--mut:var(--secondary-text-color,#8e8e96);--acc:var(--primary-color,#0a84ff);--ln:var(--divider-color,#38383d)}
   ha-card{display:block;container-type:inline-size;padding:16px;position:relative;color:var(--txt);overflow:hidden;background:var(--ha-card-background,var(--card-background-color,#1f1f22));border-radius:var(--ha-card-border-radius,12px)}
   .head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-  .ic{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-size:20px;background:rgba(255,138,61,.16);flex:none}
+  .ic{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-size:20px;background:rgba(255,138,61,.16);color:#ff8a3d;flex:none}
+  .ic ha-icon{--mdc-icon-size:24px}
   .ttl{min-width:0}.t{font-weight:600;font-size:16px}.s{color:var(--mut);font-size:12px}
   .badge{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;background:rgba(10,132,255,.18);color:var(--acc);margin-right:4px}
   .badge.ha{background:rgba(255,159,10,.18);color:#ff9f0a}
@@ -283,7 +286,11 @@
   .cells{position:relative;display:grid;grid-template-columns:repeat(48,1fr);border-radius:7px;overflow:hidden;outline:2px solid transparent;outline-offset:1px}
   .row.over .cells{outline-color:#ff453a}
   .cell{height:30px}.grid.editing .cell{cursor:cell}
-  .cell.l0{box-shadow:inset -1px 0 0 color-mix(in srgb,var(--sep) 45%,transparent)}.cell.l1{box-shadow:inset -1px 0 0 var(--sep)}.cell.l6{box-shadow:inset -2px 0 0 var(--sep)}
+  /* separators are cut out of the cell with a mask, so the card background shows through like a gap
+     (themes may use a gradient as card background, which can't be used as a line colour) */
+  .cell.l0{-webkit-mask:linear-gradient(to left,rgba(0,0,0,.45) 1px,#000 1px);mask:linear-gradient(to left,rgba(0,0,0,.45) 1px,#000 1px)}
+  .cell.l1{-webkit-mask:linear-gradient(to left,transparent 1px,#000 1px);mask:linear-gradient(to left,transparent 1px,#000 1px)}
+  .cell.l6{-webkit-mask:linear-gradient(to left,transparent 2px,#000 2px);mask:linear-gradient(to left,transparent 2px,#000 2px)}
   .now{position:absolute;top:0;bottom:0;width:2px;background:#fff;box-shadow:0 0 5px rgba(0,0,0,.7);pointer-events:none}
   .cnt{font-size:11px;color:var(--mut);text-align:right;font-variant-numeric:tabular-nums}.cnt.over{color:#ff453a;font-weight:700}
   .tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}.sp{flex:1}
@@ -310,6 +317,7 @@
   const EDITOR_SCHEMA = [
     { name: 'schedule_id', required: true, selector: { text: {} } },
     { name: 'title', selector: { text: {} } },
+    { name: 'icon', selector: { icon: { placeholder: 'mdi:thermometer' } } },
     { name: 'climates', selector: { entity: { multiple: true, filter: { domain: 'climate' } } } },
     { name: 'mode', selector: { select: { mode: 'dropdown', options: [
       { value: 'native', label: 'Native – program the valves' },
@@ -321,6 +329,7 @@
   const EDITOR_LABELS = {
     schedule_id: ['Schedule ID', 'Unique per room. Changing it starts a new, empty schedule.'],
     title: ['Title'],
+    icon: ['Icon', 'Shown next to the title. Leave empty for mdi:thermometer.'],
     climates: ['Valves', 'All valves on this card get the same schedule.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
