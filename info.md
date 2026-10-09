@@ -2,7 +2,7 @@
 
 # Danfoss Schedule Card
 
-Paint-grid week schedule for Danfoss Ally TRVs (ZHA). Schedules are written into the valves, so they keep running even when HA or Zigbee is down.
+Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT). Schedules are written into the valves, so they keep running even when HA or Zigbee is down.
 
 - Drag to paint a rectangle of days × hours
 - Editable presets (name, temperature, color)

@@ -1,18 +1,18 @@
 /*
- * danfoss-schedule-card  v1.3.1
- * Paint-grid week schedule for Danfoss Ally TRVs (ZHA) – backend: pyscript/climate_schedule.py
+ * danfoss-schedule-card  v1.4
+ * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
  * schedule_id: living_room            # required
  * title: Living room
- * climates:                           # climate entities (or {entity, ieee})
+ * climates:                           # climate entities (or {entity, ieee} / {entity, z2m})
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
  * presets:                            # optional, used until the first save
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.3.1';
+  const VERSION = '1.4.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -110,6 +110,7 @@
         await this._hass.callService('pyscript', 'climate_schedule_save', {
           schedule_id: slug(this._cfg.schedule_id), title: this._cfg.title, climates,
           presets: data.presets, days: data.days, mode: this._cfg.mode, oper_mode: this._cfg.oper_mode ?? 1,
+          z2m_base_topic: this._cfg.z2m_base_topic,
         });
         this._draft = null;
         this._toast(this._cfg.mode === 'ha' ? 'Saved – HA will set temperatures' : 'Saved – programming valves…');
@@ -204,13 +205,16 @@
       /* every hour is rendered; CSS container queries hide some when the card is narrow */
       const ticks = Array.from({ length: 25 }, (_, h) => `<span class="hr${h % 2 ? '' : ' m2'}${h % 3 ? '' : ' m3'}${h % 6 ? '' : ' m6'}" style="left:${(h / 24) * 100}%">${h}</span>`).join('');
 
+      const cfgC = {}; (this._cfg.climates || []).forEach((x) => { if (typeof x !== 'string') cfgC[x.entity] = x; });
       const valves = this._climates().map((id) => {
         const st = this._hass?.states[id], s = status[id];
+        const plat = cfgC[id]?.z2m ? 'mqtt' : cfgC[id]?.ieee ? 'zha' : this._hass?.entities?.[id]?.platform;
+        const via = plat === 'zha' ? 'ZHA' : plat === 'mqtt' ? 'Z2M' : '';
         const name = st?.attributes.friendly_name || id;
         const temp = st?.attributes.current_temperature;
         const cls = mode === 'ha' ? 'ha' : !st || st.state === 'unavailable' ? 'err' : s ? s.state : 'unknown';
         const title = mode === 'ha' ? 'HA-driven' : s ? `${s.state} · ${s.at?.replace('T', ' ') || ''} ${s.msg || ''}` : 'not programmed yet';
-        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}</div>`;
+        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
 
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
@@ -318,6 +322,7 @@
   .valves{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)}
   .valve{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--bg2);padding:5px 10px;border-radius:9px}
   .valve b{font-weight:600}
+  .via{font-size:9px;font-weight:700;letter-spacing:.3px;padding:1px 4px;border-radius:4px;background:var(--ln);color:var(--mut)}
   .sd{width:8px;height:8px;border-radius:50%;background:var(--mut)}
   .sd.ok{background:#34c759}.sd.pending{background:#ff9f0a;animation:p 1s infinite alternate}.sd.error,.sd.err{background:#ff453a}.sd.ha{background:#ff9f0a}
   @keyframes p{to{opacity:.3}}
@@ -335,6 +340,7 @@
       { value: 'ha', label: 'HA – Home Assistant sets the temperature' },
     ] } } },
     { name: 'oper_mode', selector: { number: { min: 0, max: 255, mode: 'box' } } },
+    { name: 'z2m_base_topic', selector: { text: {} } },
   ];
   const EDITOR_LABELS = {
     schedule_id: ['Schedule ID', 'Unique per room. Changing it starts a new, empty schedule.'],
@@ -342,6 +348,7 @@
     climates: ['Valves', 'All valves on this card get the same schedule.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
+    z2m_base_topic: ['Zigbee2MQTT base topic', 'Only for Zigbee2MQTT valves. Leave empty for the default "zigbee2mqtt".'],
   };
   const PALETTE = ['#ff8a3d', '#34c759', '#5e5ce6', '#8e8e93', '#ff453a', '#0a84ff', '#ffd60a', '#bf5af2'];
 
@@ -366,7 +373,7 @@
         if (val === undefined || val === null || val === '' || (Array.isArray(val) && !val.length)) delete cfg[name];
         else cfg[name] = val;
       }
-      if (cfg.climates) cfg.climates = cfg.climates.map((id) => ieee[id] || id); // keep {entity, ieee} overrides
+      if (cfg.climates) cfg.climates = cfg.climates.map((id) => ieee[id] || id); // keep {entity, ieee|z2m} overrides
       this._emit(cfg);
     }
 
@@ -458,6 +465,6 @@
   if (!customElements.get('danfoss-schedule-card')) customElements.define('danfoss-schedule-card', DanfossScheduleCard);
   window.customCards = window.customCards || [];
   if (!window.customCards.some((c) => c.type === 'danfoss-schedule-card'))
-    window.customCards.push({ type: 'danfoss-schedule-card', name: 'Danfoss Schedule Card', description: 'Paint-grid week schedule for Danfoss Ally TRVs (ZHA + pyscript)', preview: true });
+    window.customCards.push({ type: 'danfoss-schedule-card', name: 'Danfoss Schedule Card', description: 'Paint-grid week schedule for Danfoss Ally TRVs (ZHA / Zigbee2MQTT + pyscript)', preview: true });
   console.info(`%c DANFOSS-SCHEDULE-CARD %c v${VERSION} `, 'background:#ff8a3d;color:#fff;font-weight:700', 'background:#333;color:#fff');
 })();

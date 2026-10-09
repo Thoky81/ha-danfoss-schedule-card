@@ -1,6 +1,6 @@
 <img src="https://raw.githubusercontent.com/Thoky81/ha-danfoss-schedule-card/main/images/icon.png" width="96" align="right" alt="">
 
-# Danfoss Ally week schedule (ZHA + pyscript)
+# Danfoss Ally week schedule (ZHA / Zigbee2MQTT + pyscript)
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
@@ -19,7 +19,7 @@ Install pyscript (HACS), then in `configuration.yaml`:
 ```yaml
 pyscript:
   allow_all_imports: true   # json/os/re + HA registry helpers
-  hass_is_global: true      # needed to look up each valve's ZHA IEEE address
+  hass_is_global: true      # needed to look up each valve's device (ZHA or Zigbee2MQTT)
 ```
 Copy [`pyscript/climate_schedule.py`](pyscript/climate_schedule.py) to `/config/pyscript/`, restart HA (first time) or reload pyscript.
 Schedules are saved to `/config/climate_schedules.json`.
@@ -56,9 +56,12 @@ climates:
   - climate.living_room_trv_1
   - climate.living_room_trv_2
   # - entity: climate.kids_trv
-  #   ieee: "00:15:bc:00:1a:01:23:45"   # only if auto-lookup fails
+  #   ieee: "00:15:bc:00:1a:01:23:45"   # ZHA, only if auto-detection fails
+  # - entity: climate.office_trv
+  #   z2m: "Office TRV"                 # Zigbee2MQTT friendly name, only if auto-detection fails
 mode: native            # native = program the valves | ha = HA calls climate.set_temperature
 # oper_mode: 1          # programming_operation_mode written after upload (bit0 = schedule)
+# z2m_base_topic: zigbee2mqtt   # only for Zigbee2MQTT valves with a non-default base topic
 # presets:              # initial presets (after the first save they live in the schedule)
 #   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
 #   - {name: Eco, temp: 19, color: "#34c759"}
@@ -66,6 +69,17 @@ mode: native            # native = program the valves | ha = HA calls climate.se
 #   - {name: Away, temp: 15, color: "#8e8e93"}
 ```
 One card = one schedule. All valves in `climates` get the same schedule (one room).
+
+### ZHA and Zigbee2MQTT
+Each valve is detected automatically from its device in HA, so one card can mix ZHA and Zigbee2MQTT valves. The valve chips at the bottom of the card show a **ZHA** / **Z2M** tag.
+
+| | ZHA | Zigbee2MQTT |
+|---|---|---|
+| Sent with | `zha.issue_zigbee_cluster_command` | `mqtt.publish` to `<base_topic>/<ieee>/set` |
+| Green dot means | the valve acknowledged every command | the MQTT messages were sent (Z2M does not report back) |
+| Needs | ZHA integration | MQTT integration; Z2M's base topic in `z2m_base_topic` if it isn't `zigbee2mqtt` |
+
+`mode: ha` works with any climate entity, regardless of integration.
 
 ## Using it
 - Click a preset name to pick it as the brush, then drag. The drag fills a **rectangle**: Mon→Fri × 08:00→17:00 in one move.
@@ -85,7 +99,9 @@ One card = one schedule. All valves in `climates` get the same schedule (one roo
 
 ## First test (do this on one valve)
 1. Put a single TRV in `climates`, set a block change 5–10 minutes from now, and press Save & program.
-2. The dot turns green. In ZHA → device → Manage Zigbee device → Thermostat (0x0201), read `programing_oper_mode`. It should be `1`.
+2. The dot turns green.
+   - ZHA: device → Manage Zigbee device → Thermostat (0x0201), read `programing_oper_mode`. It should be `1`.
+   - Zigbee2MQTT: in the Z2M frontend → device → Exposes, `programming_operation_mode` should be `schedule`. Check the Z2M log for `weekly_schedule` errors.
 3. At the change time the setpoint should move on its own. `setpoint_change_source` should read `schedule` (0x01).
 4. If the change happens at the wrong hour, the valve's clock or time zone is off. Use `mode: ha` until that is fixed.
 

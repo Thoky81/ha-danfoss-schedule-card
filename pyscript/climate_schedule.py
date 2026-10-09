@@ -1,11 +1,14 @@
 """
 Climate week schedule backend for `custom:danfoss-schedule-card`
-Danfoss Ally (eTRV0100 / 014G2461) via ZHA.
+Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
 
 - Master copy of every schedule lives in /config/climate_schedules.json
   and is mirrored to `pyscript.climate_schedule_<id>` for the card.
 - mode "native": schedule is written INTO the valves (ZCL Thermostat
   SetWeeklySchedule) -> valves run on their own, even without HA/Zigbee.
+  Each valve is detected as ZHA (zha.issue_zigbee_cluster_command) or
+  Zigbee2MQTT (mqtt.publish to <base_topic>/<ieee>/set), so one schedule
+  can mix both.
   Re-pushed automatically when a valve comes back from `unavailable`
   and every night at 03:15 (the Ally loses its schedule after a
   battery change / OTA).
@@ -37,6 +40,9 @@ SLOT_MIN = 30
 MAX_BLOCKS = 6               # Danfoss: 6 transitions per day
 DAY_BITS = [2, 4, 8, 16, 32, 64, 1]  # Mon..Sun -> ZCL SeqDayOfWeek (Sun = bit0)
 RETRIES = 3
+DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+Z2M_DEFAULT_BASE = "zigbee2mqtt"
+Z2M_OPER_MODES = {0: "setpoint", 1: "schedule", 3: "schedule_with_preheat", 4: "eco"}
 NIGHTLY_RESYNC = "cron(15 3 * * *)"
 
 SCHEDULES = {}
@@ -109,19 +115,33 @@ def validate(presets, days):
     return None
 
 
-def resolve_ieee(c):
+def resolve_target(c):
+    """-> ("zha", ieee) | ("z2m", ieee or friendly name) | (None, reason)"""
     if isinstance(c, dict) and c.get("ieee"):
-        return c["ieee"]
+        return "zha", c["ieee"]
+    if isinstance(c, dict) and c.get("z2m"):
+        return "z2m", c["z2m"]
     ent = er.async_get(hass).async_get(ent_id(c))
     if ent is None or ent.device_id is None:
-        return None
+        return None, "entity has no device"
     dev = dr.async_get(hass).async_get(ent.device_id)
     if dev is None:
-        return None
+        return None, "device not found"
     for ident in dev.identifiers:
         if ident[0] == "zha":
-            return ident[1]
-    return None
+            return "zha", ident[1]
+        if ident[0] == "mqtt" and str(ident[1]).startswith("zigbee2mqtt_0x"):
+            return "z2m", ident[1][len("zigbee2mqtt_"):]  # Z2M accepts the IEEE address as topic name
+    return None, "not a ZHA or Zigbee2MQTT device"
+
+
+def day_groups(s):
+    """identical days -> one command: {json(blocks): [day indexes]}"""
+    groups = {}
+    for d in range(7):
+        key = json.dumps(day_blocks(s["days"][d], s["presets"]))
+        groups.setdefault(key, []).append(d)
+    return groups
 
 
 def publish(sid):
@@ -149,6 +169,7 @@ def publish(sid):
             "days": s["days"],
             "mode": s.get("mode", "native"),
             "oper_mode": s.get("oper_mode", 1),
+            "z2m_base_topic": s.get("z2m_base_topic", Z2M_DEFAULT_BASE),
             "status": status,
             "updated": s.get("updated"),
         },
@@ -158,6 +179,13 @@ def publish(sid):
 def set_status(sid, eid, st, msg=""):
     SCHEDULES[sid].setdefault("status", {})[eid] = {"state": st, "at": now_iso(), "msg": msg}
     publish(sid)
+
+
+def is_unavailable(eid):
+    try:
+        return state.get(eid) == "unavailable"
+    except NameError:
+        return True
 
 
 # ---------------------------------------------------------------- ZHA
@@ -175,46 +203,77 @@ def zha_cmd(ieee, command, params=None):
     service.call("zha", "issue_zigbee_cluster_command", blocking=True, **kw)
 
 
+def program_zha(s, ieee, groups):
+    zha_cmd(ieee, CMD_CLEAR_WEEKLY)
+    task.sleep(1)
+    for key, days in groups.items():
+        blocks = json.loads(key)
+        values = []
+        for b in blocks:
+            values.append(int(b[0]))                 # minutes after midnight
+            values.append(int(round(b[1] * 100)))    # setpoint, 0.01 °C
+        bits = 0
+        for d in days:
+            bits |= DAY_BITS[d]
+        zha_cmd(ieee, CMD_SET_WEEKLY, {
+            "num_transitions_for_sequence": len(blocks),
+            "day_of_week_for_sequence": bits,
+            "mode_for_sequence": 1,                  # heat
+            "values": values,
+        })
+        task.sleep(1)
+    service.call(
+        "zha", "set_zigbee_cluster_attribute", blocking=True,
+        ieee=ieee, endpoint_id=ENDPOINT, cluster_id=THERMOSTAT,
+        cluster_type="in", attribute=ATTR_PROG_MODE,
+        value=int(s.get("oper_mode", 1)),
+    )
+
+
+# ---------------------------------------------------------------- Zigbee2MQTT
+def z2m_set(s, device, payload):
+    base = s.get("z2m_base_topic") or Z2M_DEFAULT_BASE
+    service.call("mqtt", "publish", blocking=True, topic=f"{base}/{device}/set", payload=json.dumps(payload))
+
+
+def z2m_oper_mode(value):
+    return Z2M_OPER_MODES.get(int(value), "schedule")
+
+
+def program_z2m(s, device, groups):
+    z2m_set(s, device, {"clear_weekly_schedule": ""})
+    task.sleep(1)
+    for key, days in groups.items():
+        transitions = []
+        for b in json.loads(key):
+            transitions.append({"transitionTime": int(b[0]), "heatSetpoint": float(b[1])})
+        z2m_set(s, device, {"weekly_schedule": {"dayofweek": [DAY_NAMES[d] for d in days], "transitions": transitions}})
+        task.sleep(1)
+    z2m_set(s, device, {"programming_operation_mode": z2m_oper_mode(s.get("oper_mode", 1))})
+
+
 def push_valve(sid, c):
     s = SCHEDULES[sid]
     eid = ent_id(c)
-    ieee = resolve_ieee(c)
-    if not ieee:
-        set_status(sid, eid, "error", "not a ZHA device (set ieee in card config)")
+    kind, target = resolve_target(c)
+    if kind is None:
+        set_status(sid, eid, "error", f"{target} (set ieee or z2m in card config)")
         return False
-
-    # group identical days into one SetWeeklySchedule command
-    groups = {}
-    for d in range(7):
-        key = json.dumps(day_blocks(s["days"][d], s["presets"]))
-        groups[key] = groups.get(key, 0) | DAY_BITS[d]
+    if is_unavailable(eid):
+        set_status(sid, eid, "error", "valve unavailable, will retry when it is back")
+        return False
+    groups = day_groups(s)
 
     last_err = ""
     for attempt in range(RETRIES):
         try:
-            zha_cmd(ieee, CMD_CLEAR_WEEKLY)
-            task.sleep(1)
-            for key, bits in groups.items():
-                blocks = json.loads(key)
-                values = []
-                for b in blocks:
-                    values.append(int(b[0]))                 # minutes after midnight
-                    values.append(int(round(b[1] * 100)))    # setpoint, 0.01 °C
-                zha_cmd(ieee, CMD_SET_WEEKLY, {
-                    "num_transitions_for_sequence": len(blocks),
-                    "day_of_week_for_sequence": bits,
-                    "mode_for_sequence": 1,                  # heat
-                    "values": values,
-                })
-                task.sleep(1)
-            service.call(
-                "zha", "set_zigbee_cluster_attribute", blocking=True,
-                ieee=ieee, endpoint_id=ENDPOINT, cluster_id=THERMOSTAT,
-                cluster_type="in", attribute=ATTR_PROG_MODE,
-                value=int(s.get("oper_mode", 1)),
-            )
-            set_status(sid, eid, "ok", f"{len(groups)} day group(s)")
-            log.info(f"climate_schedule {sid}: programmed {eid} ({ieee})")
+            if kind == "zha":
+                program_zha(s, target, groups)
+                set_status(sid, eid, "ok", f"{len(groups)} day group(s) via ZHA")
+            else:
+                program_z2m(s, target, groups)
+                set_status(sid, eid, "ok", f"{len(groups)} day group(s) sent via Z2M")
+            log.info(f"climate_schedule {sid}: programmed {eid} ({kind} {target})")
             return True
         except Exception as e:
             last_err = str(e)
@@ -239,16 +298,18 @@ def push_schedule(sid):
 
 def set_valves_manual(sid):
     """Switch valves back to plain setpoint mode (schedule bit off)."""
-    for c in SCHEDULES[sid]["climates"]:
-        ieee = resolve_ieee(c)
-        if not ieee:
-            continue
+    s = SCHEDULES[sid]
+    for c in s["climates"]:
+        kind, target = resolve_target(c)
         try:
-            service.call(
-                "zha", "set_zigbee_cluster_attribute", blocking=True,
-                ieee=ieee, endpoint_id=ENDPOINT, cluster_id=THERMOSTAT,
-                cluster_type="in", attribute=ATTR_PROG_MODE, value=0,
-            )
+            if kind == "zha":
+                service.call(
+                    "zha", "set_zigbee_cluster_attribute", blocking=True,
+                    ieee=target, endpoint_id=ENDPOINT, cluster_id=THERMOSTAT,
+                    cluster_type="in", attribute=ATTR_PROG_MODE, value=0,
+                )
+            elif kind == "z2m":
+                z2m_set(s, target, {"programming_operation_mode": z2m_oper_mode(0)})
         except Exception as e:
             log.warning(f"climate_schedule {sid}: could not reset {ent_id(c)}: {e}")
 
@@ -324,7 +385,7 @@ def climate_schedule_nightly():
 # ---------------------------------------------------------------- services
 @service
 def climate_schedule_save(schedule_id=None, title=None, climates=None, presets=None,
-                          days=None, mode="native", oper_mode=1):
+                          days=None, mode="native", oper_mode=1, z2m_base_topic=None):
     """yaml
 name: Save climate schedule
 description: Store a week schedule and program the valves (called by danfoss-schedule-card).
@@ -341,7 +402,7 @@ fields:
     selector:
       text:
   climates:
-    description: "Climate entities, or {entity, ieee} objects"
+    description: "Climate entities, or {entity, ieee} / {entity, z2m} objects"
     required: true
     selector:
       object:
@@ -368,6 +429,11 @@ fields:
       number:
         min: 0
         max: 255
+  z2m_base_topic:
+    description: "Zigbee2MQTT base topic (only for Z2M valves)"
+    example: zigbee2mqtt
+    selector:
+      text:
 """
     if not schedule_id or not climates:
         raise ValueError("schedule_id and climates are required")
@@ -386,6 +452,7 @@ fields:
         "days": days,
         "mode": mode if mode in ("native", "ha") else "native",
         "oper_mode": int(oper_mode),
+        "z2m_base_topic": z2m_base_topic or old.get("z2m_base_topic") or Z2M_DEFAULT_BASE,
         "status": {},
         "updated": now_iso(),
     }
