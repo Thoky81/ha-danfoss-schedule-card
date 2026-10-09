@@ -151,9 +151,9 @@ def publish(sid):
     status = s.get("status", {})
     if s.get("mode") == "ha":
         overall = "ha"
-    elif any(v.get("state") == "error" for v in status.values()):
+    elif any([v.get("state") == "error" for v in status.values()]):
         overall = "error"
-    elif any(v.get("state") == "pending" for v in status.values()):
+    elif any([v.get("state") == "pending" for v in status.values()]):
         overall = "pending"
     elif status:
         overall = "ok"
