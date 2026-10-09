@@ -368,8 +368,11 @@ def push_schedule(sid):
     for c in s["climates"]:
         SCHEDULES[sid].setdefault("status", {})[ent_id(c)] = {"state": "pending", "at": now_iso(), "msg": ""}
     publish(sid)
+    # all valves in parallel: one unreachable valve (retries, timeouts) must not hold up the others
+    tasks = set()
     for c in s["climates"]:
-        push_valve(sid, c)
+        tasks.add(task.create(push_valve, sid, c))
+    task.wait(tasks)
     save_store()
 
 
