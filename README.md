@@ -24,7 +24,7 @@ pyscript:
 Copy [`pyscript/climate_schedule.py`](pyscript/climate_schedule.py) to `/config/pyscript/`, restart HA (first time) or reload pyscript.
 Schedules are saved to `/config/climate_schedules.json`.
 
-Services: `pyscript.climate_schedule_save`, `pyscript.climate_schedule_push`, `pyscript.climate_schedule_delete`.
+Services: `pyscript.climate_schedule_save`, `pyscript.climate_schedule_push`, `pyscript.climate_schedule_delete`, `pyscript.climate_schedule_boost`, `pyscript.climate_schedule_boost_cancel`.
 
 ## 2. Card
 
@@ -92,6 +92,13 @@ The card is **view-only** by default, so a stray tap (or a swipe on mobile) can'
 - The `n/6` counter on each row is the number of temperature blocks that day. Danfoss stores **at most 6 per day**. If any day is over the limit, the row turns red and Save is disabled.
 - Two adjacent presets with the same temperature count as one block.
 - Valve dots: green = programmed, orange blinking = upload in progress, red = failed or valve unavailable. Hover a dot for details.
+
+### Boost
+**🔥 Boost** sets all valves of the card to a temperature for 30 min – 3 h, or until the next block change, then returns them to the schedule. While it runs the header shows e.g. *24.0° Boost until 16:30*, and **Cancel boost** ends it early.
+
+You can also just change the setpoint on the valve or in HA: in schedule mode the Ally keeps a manual setpoint **until its next block change** and then follows the schedule again. Boost does the same, but for a fixed time (if a block change falls inside a boost, the boost is re-applied right after it).
+
+Services: `pyscript.climate_schedule_boost` (`schedule_id`, `temperature`, `minutes`, 0 = until next change) and `pyscript.climate_schedule_boost_cancel`, e.g. for an automation or a button.
 
 ### Presets
 Preset names, temperatures and colors are edited in the **card editor** (dashboard edit mode → edit the card), not on the card itself. The editor shows the presets the schedule uses now; after changing them the card shows a note and **Save & program** applies them. **Undo changes** in the editor goes back to the saved presets.

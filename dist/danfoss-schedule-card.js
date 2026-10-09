@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.5
+ * danfoss-schedule-card  v1.7
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -13,7 +13,7 @@
  *   - {name: Comfort, temp: 21.5, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.6.0';
+  const VERSION = '1.7.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -36,6 +36,12 @@
   const errText = (e) => {
     const m = String((e && e.message) || e);
     return /climate_schedule_\w+ not found/i.test(m) ? 'Backend not loaded – copy climate_schedule.py to /config/pyscript/ and reload pyscript (check the HA log for pyscript errors)' : m;
+  };
+  const BOOST_MINUTES = [30, 60, 120, 180, 0]; // 0 = until the next block change
+  const durTxt = (m) => (!m ? 'Until next change' : m < 60 ? `${m} min` : `${m / 60} h`);
+  const untilTxt = (iso) => {
+    const d = new Date(iso), t = fmt(d.getHours() * 60 + d.getMinutes());
+    return d.toDateString() === new Date().toDateString() ? t : `${DAYS[(d.getDay() + 6) % 7]} ${t}`;
   };
   const normP = (ps) => JSON.stringify((ps || []).map((p) => ({ name: String(p.name), temp: +p.temp, color: String(p.color) })));
   const fitDays = (days, n) => days.map((d) => d.replace(/./g, (ch) => (+ch < n ? ch : '0')));
@@ -130,6 +136,22 @@
       catch (e) { this._toast('Re-sync failed: ' + errText(e), true); }
     }
     _toast(text, err = false) { this._msg = { text, err }; clearTimeout(this._mt); this._mt = setTimeout(() => { this._msg = null; this._render(); }, 5000); this._render(); }
+    _openBoost(cur, presets) {
+      this._bo = true; this._bm = 60;
+      // a boost should be warm: the warmest preset, or 2° above now if that is higher
+      this._bt = Math.min(30, Math.round(Math.max(+cur.t + 2, ...presets.map((p) => +p.temp)) * 2) / 2);
+      this._render();
+    }
+    async _boostStart() {
+      try {
+        await this._hass.callService('pyscript', 'climate_schedule_boost', { schedule_id: slug(this._cfg.schedule_id), temperature: this._bt, minutes: this._bm });
+        this._bo = false; this._toast(`Boost ${this._bt.toFixed(1)}° – ${durTxt(this._bm).toLowerCase()}`);
+      } catch (e) { this._toast('Boost failed: ' + errText(e), true); }
+    }
+    async _boostCancel() {
+      try { await this._hass.callService('pyscript', 'climate_schedule_boost_cancel', { schedule_id: slug(this._cfg.schedule_id) }); this._toast('Boost cancelled, back to the schedule'); }
+      catch (e) { this._toast('Cancel failed: ' + errText(e), true); }
+    }
     _copy(from, to) { const d = this._edit(); to.forEach((i) => (d.days[i] = d.days[from])); this._render(); }
 
     /* ---------- painting ---------- */
@@ -209,6 +231,16 @@
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
 
       const icon = this._cfg.icon || 'mdi:thermometer';
+      const boost = ent?.attributes.boost;
+      const nowHtml = boost
+        ? `<b style="color:#ff453a">${(+boost.temp).toFixed(1)}°</b><div class="s">Boost until ${boost.kind === 'next' ? 'next change, ' : ''}${untilTxt(boost.until)}</div>`
+        : `<b style="color:${data.presets[cur.p].color}">${(+cur.t).toFixed(1)}°</b><div class="s">${esc(data.presets[cur.p].name)}${cur.until ? ' until ' + cur.until : ''}</div>`;
+      const boostPanel = this._bo && !ed ? `
+        <div class="boost">
+          <div class="brow"><span class="bl">Boost to</span><button class="tb" data-b="-1">−</button><b class="bt">${this._bt.toFixed(1)}°</b><button class="tb" data-b="1">+</button></div>
+          <div class="brow"><span class="bl">For</span>${BOOST_MINUTES.map((m) => `<button class="dur${m === this._bm ? ' on' : ''}" data-m="${m}">${durTxt(m)}</button>`).join('')}</div>
+          <div class="brow end"><button class="btn" data-a="bclose">Cancel</button><button class="btn pri" data-a="bstart">Start boost</button></div>
+        </div>` : '';
       const saveBtn = `<button class="btn pri" data-a="save" ${invalid || this._busy || (!dirty && ent) ? 'disabled' : ''}>${this._busy ? 'Saving…' : mode === 'ha' ? 'Save' : 'Save & program'}</button>`;
       const tools = ed ? `
           <button class="btn" data-a="wd" title="Copy Monday's schedule to Tuesday–Friday">Copy Mon → Tue–Fri</button>
@@ -217,6 +249,7 @@
           <button class="btn" data-a="cancel">Cancel</button>
           ${saveBtn}` : `
           <button class="btn" data-a="edit">✎ Edit schedule</button>
+          ${ent ? (boost ? '<button class="btn hot" data-a="unboost">Cancel boost</button>' : '<button class="btn" data-a="boost">🔥 Boost</button>') : ''}
           <span class="sp"></span>
           ${ent && mode === 'native' && !pc ? '<button class="btn" data-a="resync">Re-sync</button>' : ''}
           ${pc || !ent ? saveBtn : ''}`;
@@ -226,14 +259,14 @@
           <div class="ic">${icon.includes(':') ? `<ha-icon icon="${esc(icon)}"></ha-icon>` : esc(icon)}</div>
           <div class="ttl"><div class="t">${esc(this._cfg.title)}</div>
             <div class="s"><span class="badge ${mode}">${mode === 'ha' ? 'HA-driven' : 'On-valve schedule'}</span> ${savedTxt}</div></div>
-          <div class="nowt"><b style="color:${data.presets[cur.p].color}">${(+cur.t).toFixed(1)}°</b><div class="s">${esc(data.presets[cur.p].name)}${cur.until ? ' until ' + cur.until : ''}</div></div>
+          <div class="nowt">${nowHtml}</div>
         </div>
         <div class="presets">${chips}</div>
         ${ed ? '<div class="hint">Pick a preset, then drag over the grid to paint.</div>' : ''}
         <div class="ruler"><span></span><div class="ticks">${ticks}</div><span></span></div>
         <div class="grid${ed ? ' editing' : ''}">${rows}</div>
         <div class="tools">${tools}
-        </div>
+        </div>${boostPanel}
         ${pc && !ed ? '<div class="note">Presets were changed in the card editor. Press <b>Save &amp; program</b> to apply them.</div>' : ''}
         ${invalid ? `<div class="warn">⚠ ${esc(invalid)}</div>` : ''}
         ${this._msg ? `<div class="msg ${this._msg.err ? 'err' : ''}">${esc(this._msg.text)}</div>` : ''}
@@ -247,11 +280,17 @@
         const a = b.dataset.a;
         if (a === 'wd') this._copy(0, [1, 2, 3, 4]);
         else if (a === 'we') this._copy(5, [6]);
-        else if (a === 'edit') { this._editing = true; this._sel = Math.min(this._sel, data.presets.length - 1); this._render(); }
+        else if (a === 'boost') this._openBoost(cur, data.presets);
+        else if (a === 'bclose') { this._bo = false; this._render(); }
+        else if (a === 'bstart') this._boostStart();
+        else if (a === 'unboost') this._boostCancel();
+        else if (a === 'edit') { this._bo = false; this._editing = true; this._sel = Math.min(this._sel, data.presets.length - 1); this._render(); }
         else if (a === 'cancel') { this._draft = null; this._editing = false; this._render(); }
         else if (a === 'resync') this._resync();
         else if (a === 'save') this._save();
       }));
+      root.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => { this._bt = Math.max(5, Math.min(30, this._bt + 0.5 * +b.dataset.b)); this._render(); }));
+      root.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { this._bm = +b.dataset.m; this._render(); }));
       this._bindGrid();
     }
   }
@@ -273,6 +312,14 @@
   .dot{width:10px;height:10px;border-radius:50%;background:var(--c)}
   .nm{font-size:13px}.tv{font-variant-numeric:tabular-nums;font-weight:600;font-size:13px}
   .hint{color:var(--mut);font-size:12px;margin:-4px 0 8px}
+  .btn.hot{border-color:#ff453a;color:#ff453a}
+  .boost{margin-top:10px;padding:10px 12px;border-radius:12px;background:var(--bg2);display:flex;flex-direction:column;gap:8px}
+  .brow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.brow.end{justify-content:flex-end}
+  .bl{color:var(--mut);font-size:13px;min-width:62px}
+  .bt{font-size:18px;font-weight:600;min-width:56px;text-align:center;color:#ff453a;font-variant-numeric:tabular-nums}
+  .tb{border:0;background:var(--ln);color:var(--txt);width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:18px;line-height:1}
+  .dur{border:1px solid var(--ln);background:transparent;color:var(--txt);padding:5px 10px;border-radius:9px;cursor:pointer;font:inherit;font-size:13px}
+  .dur.on{border-color:#ff453a;background:color-mix(in srgb,#ff453a 15%,transparent)}
   .ruler,.row{display:grid;grid-template-columns:34px 1fr 34px;align-items:center;column-gap:6px}
   .ticks{position:relative;height:14px;color:var(--mut);font-size:10px}
   .ticks span{position:absolute;transform:translateX(-50%)}.ticks span:first-child{transform:none}.ticks span:last-child{transform:translateX(-100%)}

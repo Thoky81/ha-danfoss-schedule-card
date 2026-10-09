@@ -14,6 +14,8 @@ Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
   battery change / OTA).
 - mode "ha": HA sets climate.set_temperature at each block change
   (fallback if the on-valve schedule misbehaves).
+- boost: all valves of a schedule get a temporary setpoint for N minutes
+  (or until the next block change), then go back to the schedule.
 
 pyscript config (configuration.yaml):
   pyscript:
@@ -23,7 +25,7 @@ pyscript config (configuration.yaml):
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -176,6 +178,7 @@ def publish(sid):
         "z2m_base_topic": s.get("z2m_base_topic", Z2M_DEFAULT_BASE),
         "status": status,
         "updated": s.get("updated"),
+        "boost": s.get("boost"),
     }))
     state.set(ENTITY_PREFIX + sid, overall, new_attributes=attrs)
 
@@ -394,17 +397,76 @@ def current_temp(s, now):
     return float(s["presets"][int(s["days"][now.weekday()][slot])]["temp"])
 
 
-def apply_ha(sid, force=False):
-    s = SCHEDULES[sid]
-    t = current_temp(s, datetime.now())
-    if not force and HA_LAST.get(sid) == t:
-        return
-    HA_LAST[sid] = t
-    for c in s["climates"]:
+def next_change(s, now):
+    """datetime of the next block with a different temperature, None if the week is flat"""
+    day = now.weekday()
+    slot = (now.hour * 60 + now.minute) // SLOT_MIN
+    cur = float(s["presets"][int(s["days"][day][slot])]["temp"])
+    for k in range(1, SLOTS * 7 + 1):
+        n = slot + k
+        d = (day + n // SLOTS) % 7
+        if float(s["presets"][int(s["days"][d][n % SLOTS])]["temp"]) != cur:
+            return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=n * SLOT_MIN)
+    return None
+
+
+def set_all(sid, t):
+    for c in SCHEDULES[sid]["climates"]:
         try:
             service.call("climate", "set_temperature", entity_id=ent_id(c), temperature=t)
         except Exception as e:
             log.warning(f"climate_schedule {sid}: set_temperature {ent_id(c)} failed: {e}")
+
+
+def apply_ha(sid, force=False):
+    s = SCHEDULES[sid]
+    if s.get("boost"):
+        return  # the boost owns the setpoint until it ends
+    t = current_temp(s, datetime.now())
+    if not force and HA_LAST.get(sid) == t:
+        return
+    HA_LAST[sid] = t
+    set_all(sid, t)
+
+
+# ---------------------------------------------------------------- boost
+def end_boost(sid, restore):
+    s = SCHEDULES.get(sid)
+    if not s or not s.get("boost"):
+        return
+    s.pop("boost", None)
+    publish(sid)
+    save_store()
+    if not restore:
+        return
+    if s.get("mode") == "ha":
+        apply_ha(sid, force=True)
+    else:
+        set_all(sid, current_temp(s, datetime.now()))  # the on-valve schedule takes over again at the next block
+
+
+def boost_timer(sid, token):
+    task.unique(f"climate_schedule_boost_{sid}")
+    while True:
+        s = SCHEDULES.get(sid)
+        b = s.get("boost") if s else None
+        if not b or b.get("token") != token:
+            return
+        now = datetime.now()
+        end = datetime.fromisoformat(b["until"])
+        if now >= end:
+            break
+        nxt = next_change(s, now) if s.get("mode") != "ha" else None
+        if b["kind"] == "timed" and nxt is not None and nxt < end:
+            # the valve drops a manual setpoint at its next block change: put the boost back right after it
+            task.sleep((nxt - now).total_seconds() + 60)
+            b = SCHEDULES.get(sid, {}).get("boost")
+            if b and b.get("token") == token:
+                set_all(sid, b["temp"])
+        else:
+            task.sleep(max(1, (end - now).total_seconds()))
+    # "until next change": the valve (or the HA tick) already moved on, only HA mode needs a push
+    end_boost(sid, restore=b["kind"] == "timed" or SCHEDULES[sid].get("mode") == "ha")
 
 
 @time_trigger("cron(0,30 * * * *)")
@@ -451,6 +513,8 @@ def climate_schedule_startup():
         SCHEDULES = {}
     for sid in SCHEDULES:
         publish(sid)
+        if SCHEDULES[sid].get("boost"):
+            task.create(boost_timer, sid, SCHEDULES[sid]["boost"]["token"])  # resumes, or ends an expired boost
     setup_triggers()
     log.info(f"climate_schedule: loaded {len(SCHEDULES)} schedule(s)")
 
@@ -536,6 +600,8 @@ fields:
         "status": {},
         "updated": now_iso(),
     }
+    if old.get("boost"):
+        SCHEDULES[sid]["boost"] = old["boost"]  # a running boost survives editing the schedule
     save_store()
     publish(sid)
     setup_triggers()
@@ -561,6 +627,71 @@ fields:
     for sid in ids:
         if sid in SCHEDULES:
             task.create(push_schedule, sid)
+
+
+@service
+def climate_schedule_boost(schedule_id=None, temperature=None, minutes=60):
+    """yaml
+name: Boost climate schedule
+description: Set all valves of a schedule to a temperature for a while, then return to the schedule.
+fields:
+  schedule_id:
+    description: Schedule id
+    required: true
+    example: living_room
+    selector:
+      text:
+  temperature:
+    description: Boost temperature
+    required: true
+    example: 23
+    selector:
+      number:
+        min: 5
+        max: 30
+        step: 0.5
+  minutes:
+    description: "Duration in minutes, 0 = until the next block change"
+    example: 60
+    selector:
+      number:
+        min: 0
+        max: 720
+"""
+    sid = slug(schedule_id)
+    s = SCHEDULES.get(sid)
+    if not s:
+        raise ValueError(f"unknown schedule {schedule_id}")
+    t = max(5.0, min(30.0, float(temperature)))
+    now = datetime.now()
+    if int(minutes or 0) > 0:
+        kind, end = "timed", now + timedelta(minutes=int(minutes))
+    else:
+        kind, end = "next", next_change(s, now)
+        if end is None:
+            raise ValueError("the schedule has no next change, give a duration")
+    token = str(now.timestamp())
+    s["boost"] = {"temp": t, "until": end.isoformat(timespec="seconds"), "kind": kind, "token": token}
+    publish(sid)
+    save_store()
+    set_all(sid, t)
+    task.create(boost_timer, sid, token)
+
+
+@service
+def climate_schedule_boost_cancel(schedule_id=None):
+    """yaml
+name: Cancel climate schedule boost
+description: End a running boost and return the valves to the schedule.
+fields:
+  schedule_id:
+    description: Schedule id
+    required: true
+    example: living_room
+    selector:
+      text:
+"""
+    end_boost(slug(schedule_id), restore=True)
 
 
 @service
