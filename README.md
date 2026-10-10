@@ -63,6 +63,7 @@ climates:
   #   z2m: "Office TRV"                 # Zigbee2MQTT friendly name, only if auto-detection fails
 mode: native            # native = program the valves | ha = HA calls climate.set_temperature
 # oper_mode: 1          # programming_operation_mode written after upload (bit0 = schedule)
+# nightly_resync: false        # re-program the valves every night at 03:15
 # z2m_base_topic: zigbee2mqtt   # only for Zigbee2MQTT valves with a non-default base topic
 # presets:              # edited in the card editor; defaults:
 #   - {name: Eco, temp: 19, color: "#34c759"}
@@ -111,7 +112,7 @@ New presets are added at the end. Only the last preset can be removed, and only 
 - On **Save**: `ClearWeeklySchedule`, then one `SetWeeklySchedule` per group of identical days (e.g. Mon–Fri + Sat–Sun = 2 commands), then `programming_operation_mode = 1`. Each valve is tried up to 3 times, 30 s apart. A red dot shows the Zigbee error (hover it); `NWK_NO_ROUTE` or timeouts mean the valve wasn't reachable: check the mesh, then press **Re-sync**.
 - The Ally **loses its schedule after a battery change or OTA**, so the schedule is re-pushed automatically:
   - when a valve comes back from `unavailable` (60 s later, only that valve; ignored in the first 10 min after HA/pyscript starts, since a restart doesn't erase schedules)
-  - every night at 03:15
+  - every night at 03:15, **only if** *Re-program valves every night* (`nightly_resync: true`) is on. Off by default: once the schedule is final nothing needs to touch the valves, and re-writing it adds Zigbee traffic for no gain.
   - manually with **Re-sync**
 - Switching a schedule to `mode: ha`, or deleting it, puts the valves back into plain setpoint mode.
 

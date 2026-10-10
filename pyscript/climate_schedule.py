@@ -10,8 +10,8 @@ Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
   Zigbee2MQTT (mqtt.publish to <base_topic>/<ieee>/set), so one schedule
   can mix both.
   Re-pushed automatically when a valve comes back from `unavailable`
-  and every night at 03:15 (the Ally loses its schedule after a
-  battery change / OTA).
+  (the Ally loses its schedule after a battery change / OTA), and every
+  night at 03:15 only if the schedule has nightly_resync enabled.
 - mode "ha": HA sets climate.set_temperature at each block change
   (fallback if the on-valve schedule misbehaves).
 - boost: all valves of a schedule get a temporary setpoint for N minutes
@@ -178,6 +178,7 @@ def publish(sid):
         "mode": s.get("mode", "native"),
         "oper_mode": s.get("oper_mode", 1),
         "z2m_base_topic": s.get("z2m_base_topic", Z2M_DEFAULT_BASE),
+        "nightly_resync": bool(s.get("nightly_resync")),
         "status": status,
         "updated": s.get("updated"),
         "boost": s.get("boost"),
@@ -539,14 +540,17 @@ def climate_schedule_startup():
 @time_trigger(NIGHTLY_RESYNC)
 def climate_schedule_nightly():
     for sid in list(SCHEDULES):
-        if SCHEDULES[sid].get("mode") == "native":
+        # off by default: re-writing an unchanged schedule only adds Zigbee traffic, and a
+        # dropped link between Clear and Set would leave the valve without a schedule
+        if SCHEDULES[sid].get("mode") == "native" and SCHEDULES[sid].get("nightly_resync"):
             push_schedule(sid)
 
 
 # ---------------------------------------------------------------- services
 @service
 def climate_schedule_save(schedule_id=None, title=None, climates=None, presets=None,
-                          days=None, mode="native", oper_mode=1, z2m_base_topic=None):
+                          days=None, mode="native", oper_mode=1, z2m_base_topic=None,
+                          nightly_resync=False):
     """yaml
 name: Save climate schedule
 description: Store a week schedule and program the valves (called by danfoss-schedule-card).
@@ -595,6 +599,11 @@ fields:
     example: zigbee2mqtt
     selector:
       text:
+  nightly_resync:
+    description: "Re-program the valves every night at 03:15"
+    example: false
+    selector:
+      boolean:
 """
     if not schedule_id or not climates:
         raise ValueError("schedule_id and climates are required")
@@ -614,6 +623,7 @@ fields:
         "mode": mode if mode in ("native", "ha") else "native",
         "oper_mode": int(oper_mode),
         "z2m_base_topic": z2m_base_topic or old.get("z2m_base_topic") or Z2M_DEFAULT_BASE,
+        "nightly_resync": str(nightly_resync).lower() in ("true", "1", "yes", "on"),
         "status": {},
         "updated": now_iso(),
     }

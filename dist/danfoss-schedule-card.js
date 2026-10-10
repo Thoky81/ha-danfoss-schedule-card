@@ -14,7 +14,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.8.0';
+  const VERSION = '1.8.1';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -86,6 +86,8 @@
     _cfgPresets() { const p = this._cfg.presets; return p && p.length ? p : null; }
     /* presets edited in the card editor replace the saved ones once Save & program is pressed */
     _presetsChanged() { const s = this._saved(), cp = this._cfgPresets(); return !!(s && cp && normP(cp) !== normP(s.presets)); }
+    /* settings that live in the backend schedule and only reach it with Save & program */
+    _settingsChanged() { const e = this._entity(); return !!(e && Array.isArray(e.attributes.days) && !!this._cfg.nightly_resync !== !!e.attributes.nightly_resync); }
     _data() {
       if (this._draft) return this._draft;
       const s = this._saved(), cp = this._cfgPresets();
@@ -127,7 +129,7 @@
         await this._hass.callService('pyscript', 'climate_schedule_save', {
           schedule_id: slug(this._cfg.schedule_id), title: this._cfg.title, climates,
           presets: data.presets, days: data.days, mode: this._cfg.mode, oper_mode: this._cfg.oper_mode ?? 1,
-          z2m_base_topic: this._cfg.z2m_base_topic,
+          z2m_base_topic: this._cfg.z2m_base_topic, nightly_resync: !!this._cfg.nightly_resync,
         });
         this._draft = null; this._editing = false;
         this._toast(this._cfg.mode === 'ha' ? 'Saved – HA will set temperatures' : 'Saved – programming valves…');
@@ -195,7 +197,7 @@
     /* ---------- render ---------- */
     _render() {
       if (!this.shadowRoot || !this._cfg) return;
-      const data = this._data(), ent = this._entity(), ed = !!this._editing, pc = this._presetsChanged(), dirty = !!this._draft || pc;
+      const data = this._data(), ent = this._entity(), ed = !!this._editing, pc = this._presetsChanged() || this._settingsChanged(), dirty = !!this._draft || pc;
       const invalid = this._invalid(data), cur = this._current(data), np = nowPos();
       const status = ent?.attributes.status || {};
       const mode = this._cfg.mode;
@@ -278,7 +280,7 @@
         <div class="grid${ed ? ' editing' : ''}">${rows}</div>
         <div class="tools">${tools}
         </div>${boostPanel}
-        ${pc && !ed ? '<div class="note">Presets were changed in the card editor. Press <b>Save &amp; program</b> to apply them.</div>' : ''}
+        ${pc && !ed ? '<div class="note">Presets or settings were changed in the card editor. Press <b>Save &amp; program</b> to apply them.</div>' : ''}
         ${invalid ? `<div class="warn">⚠ ${esc(invalid)}</div>` : ''}
         ${this._msg ? `<div class="msg ${this._msg.err ? 'err' : ''}">${esc(this._msg.text)}</div>` : ''}
         <div class="valves">${valves || '<span class="s">No climates configured</span>'}</div>
@@ -384,6 +386,7 @@
       { value: 'ha', label: 'HA – Home Assistant sets the temperature' },
     ] } } },
     { name: 'oper_mode', selector: { number: { min: 0, max: 255, mode: 'box' } } },
+    { name: 'nightly_resync', selector: { boolean: {} } },
     { name: 'z2m_base_topic', selector: { text: {} } },
   ];
   const EDITOR_LABELS = {
@@ -394,6 +397,7 @@
     temperature_sensor: ['Room temperature sensor', 'Optional. Shown in the header next to the target temperature.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
+    nightly_resync: ['Re-program valves every night', 'Off: valves are only re-programmed when you save, press Re-sync, or a valve comes back after a battery change.'],
     z2m_base_topic: ['Zigbee2MQTT base topic', 'Only for Zigbee2MQTT valves. Leave empty for the default "zigbee2mqtt".'],
   };
   const PALETTE = ['#ff8a3d', '#34c759', '#5e5ce6', '#8e8e93', '#ff453a', '#0a84ff', '#ffd60a', '#bf5af2'];
