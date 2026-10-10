@@ -1,11 +1,12 @@
 /*
- * danfoss-schedule-card  v1.7
+ * danfoss-schedule-card  v1.8
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
  * schedule_id: living_room            # required
  * title: Living room
  * icon: mdi:thermometer               # any mdi: icon, or an emoji
+ * temperature_sensor: sensor.living_room_temperature   # optional, room temperature in the header
  * climates:                           # climate entities (or {entity, ieee} / {entity, z2m})
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
@@ -13,7 +14,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.7.1';
+  const VERSION = '1.8.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -70,7 +71,7 @@
     set hass(h) {
       const old = this._hass;
       this._hass = h;
-      const watch = [this._eid, ...this._climates()];
+      const watch = [this._eid, ...this._climates(), this._cfg && this._cfg.temperature_sensor].filter(Boolean);
       if (!old || watch.some((id) => old.states[id] !== h.states[id])) { if (!this._hold()) this._render(); }
     }
 
@@ -226,13 +227,18 @@
         const name = st?.attributes.friendly_name || id;
         const temp = st?.attributes.current_temperature;
         const cls = mode === 'ha' ? 'ha' : !st || st.state === 'unavailable' ? 'err' : s ? s.state : 'unknown';
-        const title = mode === 'ha' ? 'HA-driven' : s ? `${s.state} · ${s.at?.replace('T', ' ') || ''} ${s.msg || ''}` : 'not programmed yet';
+        const last = s ? `${s.state} · ${s.at?.replace('T', ' ') || ''} ${s.msg || ''}`.trim() : 'not programmed yet';
+        const title = !st ? 'Entity not found in Home Assistant'
+          : st.state === 'unavailable' ? `Valve unavailable in Home Assistant (no contact). Last programming: ${last}`
+          : mode === 'ha' ? 'HA-driven' : last;
         return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
 
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
 
       const icon = this._cfg.icon || 'mdi:thermometer';
+      const rs = this._cfg.temperature_sensor && this._hass?.states[this._cfg.temperature_sensor];
+      const room = rs && !isNaN(parseFloat(rs.state)) ? `${parseFloat(rs.state).toFixed(1)}°` : rs ? '—' : null;
       const boost = ent?.attributes.boost;
       const nowHtml = boost
         ? `<b style="color:#ff453a">${(+boost.temp).toFixed(1)}°</b><div class="s">Boost until ${boost.kind === 'next' ? 'next change, ' : ''}${untilTxt(boost.until)}</div>`
@@ -261,7 +267,10 @@
           <div class="ic">${icon.includes(':') ? `<ha-icon icon="${esc(icon)}"></ha-icon>` : esc(icon)}</div>
           <div class="ttl"><div class="t">${esc(this._cfg.title)}</div>
             <div class="s"><span class="badge ${mode}">${mode === 'ha' ? 'HA-driven' : 'On-valve schedule'}</span> ${savedTxt}</div></div>
-          <div class="nowt">${nowHtml}</div>
+          <div class="nowt">
+            ${room ? `<div class="room" title="${esc(rs.attributes.friendly_name || this._cfg.temperature_sensor)}"><b>${room}</b><div class="s">Room</div></div>` : ''}
+            <div>${nowHtml}</div>
+          </div>
         </div>
         <div class="presets">${chips}</div>
         ${ed ? '<div class="hint">Pick a preset, then drag over the grid to paint.</div>' : ''}
@@ -306,7 +315,8 @@
   .ttl{min-width:0}.t{font-weight:600;font-size:16px}.s{color:var(--mut);font-size:12px}
   .badge{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;background:rgba(10,132,255,.18);color:var(--acc);margin-right:4px}
   .badge.ha{background:rgba(255,159,10,.18);color:#ff9f0a}
-  .nowt{margin-left:auto;text-align:right;flex:none}.nowt b{font-size:24px;font-weight:600}
+  .nowt{margin-left:auto;text-align:right;flex:none;display:flex;gap:20px;align-items:flex-start}.nowt b{font-size:24px;font-weight:600}
+  .room{padding-right:20px;border-right:1px solid var(--ln)}.room b{color:var(--txt)}
   .presets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
   .chip{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:12px;background:var(--bg2);border:2px solid transparent;user-select:none}
   .chip.pick{cursor:pointer}
@@ -359,7 +369,7 @@
   .sd.ok{background:#34c759}.sd.pending{background:#ff9f0a;animation:p 1s infinite alternate}.sd.error,.sd.err{background:#ff453a}.sd.ha{background:#ff9f0a}
   @keyframes p{to{opacity:.3}}
   .tip{position:absolute;z-index:5;padding:4px 8px;border-radius:7px;background:rgba(0,0,0,.85);color:#fff;font-size:12px;pointer-events:none;transform:translate(-50%,-150%);display:none;white-space:nowrap}
-  @media (max-width:500px){.cell{height:24px}.nowt b{font-size:20px}}
+  @media (max-width:500px){.cell{height:24px}.nowt b{font-size:20px}.nowt{gap:12px}.room{padding-right:12px}}
   `;
 
   /* ---------- visual editor ---------- */
@@ -368,6 +378,7 @@
     { name: 'title', selector: { text: {} } },
     { name: 'icon', selector: { icon: { placeholder: 'mdi:thermometer' } } },
     { name: 'climates', selector: { entity: { multiple: true, filter: { domain: 'climate' } } } },
+    { name: 'temperature_sensor', selector: { entity: { filter: { domain: 'sensor', device_class: 'temperature' } } } },
     { name: 'mode', selector: { select: { mode: 'dropdown', options: [
       { value: 'native', label: 'Native – program the valves' },
       { value: 'ha', label: 'HA – Home Assistant sets the temperature' },
@@ -380,6 +391,7 @@
     title: ['Title'],
     icon: ['Icon', 'Shown next to the title. Leave empty for mdi:thermometer.'],
     climates: ['Valves', 'All valves on this card get the same schedule.'],
+    temperature_sensor: ['Room temperature sensor', 'Optional. Shown in the header next to the target temperature.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
     z2m_base_topic: ['Zigbee2MQTT base topic', 'Only for Zigbee2MQTT valves. Leave empty for the default "zigbee2mqtt".'],

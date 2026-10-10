@@ -42,6 +42,7 @@ SLOT_MIN = 30
 MAX_BLOCKS = 6               # Danfoss: 6 transitions per day
 DAY_BITS = [2, 4, 8, 16, 32, 64, 1]  # Mon..Sun -> ZCL SeqDayOfWeek (Sun = bit0)
 RETRIES = 3
+STARTUP_GRACE = 600         # s after start in which "valve came back" is a restart, not a battery change
 RETRY_WAIT = 30              # s between attempts, gives the mesh time to find a route again
 DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 Z2M_DEFAULT_BASE = "zigbee2mqtt"
@@ -51,6 +52,7 @@ Z2M_CONFIRM_TRIES = 8        # x 5 s waiting for the valve to report the new pro
 NIGHTLY_RESYNC = "cron(15 3 * * *)"
 
 SCHEDULES = {}
+STARTED_AT = None
 AVAIL_TRIGGERS = {}
 LOG_TRIGGERS = {}
 Z2M_ERRORS = {}              # ieee / friendly name -> last failure Z2M reported on <base>/bridge/logging
@@ -477,12 +479,26 @@ def climate_schedule_ha_tick():
 
 
 # ---------------------------------------------------------------- triggers
+def push_one(sid, eid):
+    s = SCHEDULES.get(sid)
+    if not s or s.get("mode") != "native":
+        return
+    for c in s["climates"]:
+        if ent_id(c) == eid:
+            set_status(sid, eid, "pending")
+            push_valve(sid, c)
+            save_store()
+
+
 def make_avail_trigger(sid, eid):
     @state_trigger(f"{eid} != 'unavailable' and {eid}.old == 'unavailable'")
     def _came_back(**kwargs):
+        if STARTED_AT is None or (datetime.now() - STARTED_AT).total_seconds() < STARTUP_GRACE:
+            return  # HA / Zigbee restart: every valve "comes back", nothing was lost
+        task.unique(f"climate_schedule_back_{sid}_{eid}")  # a flapping valve collapses into one push
         task.sleep(60)
-        log.info(f"climate_schedule {sid}: {eid} is back, re-pushing schedule")
-        push_schedule(sid)
+        log.info(f"climate_schedule {sid}: {eid} is back, re-pushing it")
+        push_one(sid, eid)  # only this valve: the others still have their schedule
     return _came_back
 
 
@@ -505,7 +521,8 @@ def setup_triggers():
 
 @time_trigger("startup")
 def climate_schedule_startup():
-    global SCHEDULES
+    global SCHEDULES, STARTED_AT
+    STARTED_AT = datetime.now()
     try:
         SCHEDULES = task.executor(_read_store, STORE) or {}
     except Exception as e:
