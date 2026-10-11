@@ -14,6 +14,12 @@ with sync_playwright() as p:
     msgs = []
     pg.on("console", lambda m: msgs.append(f"{m.type}: {m.text}"))
     pg.goto(B + "/danfoss-test/test")
+    pg.wait_for_timeout(4000)
+    if "auth/authorize" in pg.url:  # stored token expired: log in with the test user from onboard.sh
+        pg.locator("input[name=username]").fill("test")
+        pg.locator("input[name=password]").fill("test-pass-1234")
+        pg.get_by_role("button", name="Log in").click()
+        pg.wait_for_url("**/danfoss-test/**", timeout=20000)
     pg.wait_for_timeout(8000)
     info = pg.evaluate("""() => { const se = document.scrollingElement;
         return {cards: document.querySelector('home-assistant')?.shadowRoot ? 'ha' : 'none', scrollH: se.scrollHeight, clientH: se.clientHeight}; }""")

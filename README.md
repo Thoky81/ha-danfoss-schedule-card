@@ -54,6 +54,8 @@ schedule_id: living_room
 title: Living room
 icon: mdi:thermometer    # any mdi: icon, or an emoji
 temperature_sensor: sensor.living_room_temperature   # optional, room temperature in the header
+show_graph: true         # room temperature + target history at the bottom (needs temperature_sensor)
+graph_hours: 24          # default range: 6 | 12 | 24 | 48
 climates:
   - climate.living_room_trv_1
   - climate.living_room_trv_2
@@ -95,6 +97,9 @@ The card is **view-only** by default, so a stray tap (or a swipe on mobile) can'
 - The `n/6` counter on each row is the number of temperature blocks that day. Danfoss stores **at most 6 per day**. If any day is over the limit, the row turns red and Save is disabled.
 - Two adjacent presets with the same temperature count as one block.
 - Valve dots: green = programmed, orange blinking = programming in progress, red = programming failed **or** the valve is `unavailable` in HA right now. Hover a dot for the reason.
+
+### Temperature history
+With a room temperature sensor set, the bottom of the card shows its history together with the scheduled **target**, coloured by preset like the grid, so you can see how the room follows the schedule. Pick **6 h / 12 h / 24 h / 48 h** on the card (default in the editor); hover for the exact values. The data comes from Home Assistant's history (recorder). Turn it off with *Show temperature history* in the editor.
 
 ### Boost
 **🔥 Boost** sets all valves of the card to a temperature for 30 min – 3 h, or until the next block change, then returns them to the schedule. While it runs the header shows e.g. *24.0° Boost until 16:30*, and **Cancel boost** ends it early.

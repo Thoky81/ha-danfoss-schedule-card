@@ -156,7 +156,36 @@ test('editor: shows saved presets, undo, only last unused preset removable', () 
   ed.hass = hassWith(saved({ days: Array(7).fill('2'.repeat(48)) })).hass;
   assert.equal(E.querySelector('.del').disabled, true, 'last preset in use');
   assert.deepEqual(plain(E.querySelector('ha-form').schema.map((x) => x.name)),
-    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'mode', 'oper_mode', 'nightly_resync', 'z2m_base_topic']);
+    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'graph_hours', 'mode', 'oper_mode', 'nightly_resync', 'z2m_base_topic']);
+});
+
+test('history graph: loads history, preset-coloured target, range buttons, hover', async () => {
+  const w = env(); const { hass } = hassWith(saved(), { 'sensor.t': { state: '21.4', attributes: {}, last_updated: new Date().toISOString() } });
+  const now = Date.now() / 1000, asked = [];
+  hass.callWS = async (msg) => { asked.push(msg); return { 'sensor.t': [0, 1, 2, 3, 4, 5].map((i) => ({ s: String(19 + i / 2), lu: now - (40 - i * 7) * 3600 })) }; };
+  const { c, q, R } = mount(w, { temperature_sensor: 'sensor.t' }, hass);
+  await tick(); await tick();
+  assert.equal(asked[0].type, 'history/history_during_period');
+  assert.deepEqual(plain(asked[0].entity_ids), ['sensor.t']);
+  assert.ok(q('.graph .rl'), 'room line drawn');
+  const colors = new Set([...R.querySelectorAll('.ts')].map((p) => p.style.stroke));
+  assert.ok(colors.size >= 1 && ![...colors].includes(''), 'target segments carry preset colours');
+  assert.equal(q('.gh.on').textContent, '24 h');
+  q('[data-gh="6"]').click();
+  assert.equal(q('.gh.on').textContent, '6 h');
+  c._gHover(0.5);
+  assert.ok(q('.gplot').classList.contains('hov'));
+  assert.match(q('.gtip').textContent, /Room/);
+  c._gHover(null);
+  assert.ok(!q('.gplot').classList.contains('hov'));
+  assert.equal(asked.length, 1, 'history fetched once, range buttons slice it');
+});
+
+test('graph off without sensor or with show_graph: false; compact rows class untouched in view', () => {
+  const w = env(); const { hass } = hassWith(saved(), { 'sensor.t': { state: '21', attributes: {} } });
+  assert.equal(mount(w, {}, hass).q('.graph'), null);
+  assert.equal(mount(w, { temperature_sensor: 'sensor.t', show_graph: false }, hass).q('.graph'), null);
+  assert.match(SRC, /\.cell\{height:20px\}\.grid\.editing \.cell\{height:30px/);
 });
 
 let failed = 0;
