@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.9
+ * danfoss-schedule-card  v1.10
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -8,7 +8,6 @@
  * icon: mdi:thermometer               # any mdi: icon, or an emoji
  * temperature_sensor: sensor.living_room_temperature   # optional, room temperature in the header
  * show_graph: true                    # room temperature + target history (needs temperature_sensor)
- * graph_hours: 24                     # 6 | 12 | 24 | 48
  * climates:                           # climate entities (or {entity, ieee} / {entity, z2m})
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
@@ -16,7 +15,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.9.0';
+  const VERSION = '1.10.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -43,9 +42,8 @@
     return /climate_schedule_\w+ not found/i.test(m) ? 'Backend not loaded – copy climate_schedule.py to /config/pyscript/ and reload pyscript (check the HA log for pyscript errors)' : m;
   };
   const BOOST_MINUTES = [30, 60, 120, 180, 0]; // 0 = until the next block change
-  const GRAPH_HOURS = [6, 12, 24, 48];
-  const GRAPH_TICK_H = { 6: 1, 12: 3, 24: 6, 48: 12 };
   const GH = 110; // graph plot height, px
+  const G_LO = 5, G_HI = 35; // fixed scale = the Ally's setpoint range, same on every card
   const HIST_REFRESH = 10 * 60e3;
   const durTxt = (m) => (!m ? 'Until next change' : m < 60 ? `${m} min` : `${m / 60} h`);
   const untilTxt = (iso) => {
@@ -169,7 +167,6 @@
     }
     /* ---------- room temperature history ---------- */
     _graphOn() { return !!(this._cfg && this._cfg.temperature_sensor && this._cfg.show_graph !== false); }
-    _gHours() { return this._gh || +this._cfg.graph_hours || 24; }
     _histCheck(old) {
       if (!this._graphOn()) return;
       const id = this._cfg.temperature_sensor, h = this._hist;
@@ -181,9 +178,10 @@
       if (this._histBusy || !this._hass?.callWS) return;
       this._histBusy = true;
       const id = this._cfg.temperature_sensor;
-      try { // always the longest range; shorter ranges are a slice of it
+      try { // yesterday 00:00 until now covers both day views
+        const y0 = new Date(); y0.setHours(0, 0, 0, 0); y0.setDate(y0.getDate() - 1);
         const r = await this._hass.callWS({
-          type: 'history/history_during_period', start_time: new Date(Date.now() - 48 * 3600e3).toISOString(),
+          type: 'history/history_during_period', start_time: y0.toISOString(),
           entity_ids: [id], minimal_response: true, no_attributes: true, significant_changes_only: false,
         });
         this._hist = { id, at: Date.now(), pts: (r[id] || []).map((x) => ({ t: (x.lu || x.lc) * 1000, v: parseFloat(x.s) })) };
@@ -191,53 +189,55 @@
       this._histBusy = false;
       if (!this._hold()) this._render();
     }
+    /* one calendar day, laid out exactly like the schedule rows above (same columns, one bar per half hour) */
     _graphHtml(data) {
       this._gm = null;
       if (!this._graphOn()) return '';
-      const hours = this._gHours(), end = Date.now(), start = end - hours * 3600e3;
+      const now = Date.now(), d0 = new Date(); d0.setHours(0, 0, 0, 0);
+      if (this._gy) d0.setDate(d0.getDate() - 1);
+      const start = d0.getTime(), end = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + 1).getTime(); // DST-safe
+      const day = (d0.getDay() + 6) % 7;
       const key = data.presets.slice(0, 3).map((p) => `<b style="background:${p.color}"></b>`).join('');
       const head = `<div class="ghead"><span class="gt">Room temperature</span>
-          ${GRAPH_HOURS.map((h) => `<button class="gh${h === hours ? ' on' : ''}" data-gh="${h}">${h} h</button>`).join('')}
+          <button class="gh${this._gy ? ' on' : ''}" data-gy="1">Yesterday</button><button class="gh${this._gy ? '' : ' on'}" data-gy="0">Today</button>
           <span class="sp"></span><span class="lg"><i class="kr"></i>Room</span><span class="lg"><i class="kt">${key}</i>Target</span></div>`;
       const h = this._hist;
+      // same three columns as a schedule row: label | 48 cells | counter
+      const frame = (left, inner) => `<div class="graph">${head}<div class="gwrap">${left}${inner}<span></span></div></div>`;
       if (!h || h.id !== this._cfg.temperature_sensor || h.err)
-        return `<div class="graph">${head}<div class="gempty">${h?.err ? 'History not available' : 'Loading history…'}</div></div>`;
+        return frame('<span></span>', `<div class="gempty">${h?.err ? 'History not available' : 'Loading history…'}</div>`);
 
-      // room readings in the window, the last one before it carried to the left edge
-      const i0 = h.pts.findIndex((p) => p.t >= start), first = i0 === -1 ? h.pts.length : i0;
-      const room = (first > 0 ? [{ t: start, v: h.pts[first - 1].v }] : []).concat(h.pts.slice(first));
-      // target: one segment per run of identical preset
-      const segs = [];
-      for (let t = Math.floor(start / 1800e3) * 1800e3; t < end; t += 1800e3) {
-        const d = new Date(t), p = data.presets[+data.days[(d.getDay() + 6) % 7][d.getHours() * 2 + (d.getMinutes() >= 30 ? 1 : 0)]];
-        const a = Math.max(t, start), b = Math.min(t + 1800e3, end), l = segs[segs.length - 1];
-        if (l && l.v === +p.temp && l.c === p.color) l.b = b; else segs.push({ a, b, v: +p.temp, c: p.color, n: p.name });
+      const X = (t) => ((t - start) / (end - start)) * 1000;
+      const Y = (v) => GH - ((Math.min(G_HI, Math.max(G_LO, v)) - G_LO) / (G_HI - G_LO)) * GH;
+      // target: one bar per half-hour cell of this day's row; the rest of today is faded (planned)
+      let bars = '';
+      for (let c = 0; c < SLOTS; c++) {
+        const p = data.presets[+data.days[day][c]], a = start + c * 1800e3;
+        const x0 = (c / SLOTS) * 1000 + 1.2, x1 = ((c + 1) / SLOTS) * 1000 - 1.2;
+        bars += `<rect x="${x0.toFixed(1)}" y="${Y(+p.temp).toFixed(1)}" width="${(x1 - x0).toFixed(1)}" height="${(GH - Y(+p.temp)).toFixed(1)}" style="fill:${p.color}" class="${a > now ? 'eq fut' : 'eq'}"/>`;
       }
-      const vals = room.map((p) => p.v).filter((v) => !isNaN(v)).concat(segs.map((x) => x.v));
-      let lo = Math.floor(Math.min(...vals) - 0.5), hi = Math.ceil(Math.max(...vals) + 0.5);
-      if ((hi - lo) % 2) hi++;
-      const X = (t) => ((t - start) / (end - start)) * 1000, Y = (v) => GH - ((v - lo) / (hi - lo)) * GH;
-      this._gm = { start, end, room, segs, Y };
-
+      // room readings of this day, the last one before it carried to midnight
+      const i0 = h.pts.findIndex((p) => p.t >= start), first = i0 === -1 ? h.pts.length : i0;
+      const room = (first > 0 ? [{ t: start, v: h.pts[first - 1].v }] : []).concat(h.pts.slice(first).filter((p) => p.t < end));
+      const stop = Math.min(now, end);
       let d = '', pen = false, lastV = null;
       room.forEach((p) => { if (isNaN(p.v)) { pen = false; return; } d += `${pen ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`; pen = true; lastV = p.v; });
-      if (pen) d += `H1000`; // the sensor holds its last value until now
-      const ys = [lo, (lo + hi) / 2, hi];
-      const step = GRAPH_TICK_H[hours] * 3600e3, xs = [];
-      for (let t = Math.ceil(start / step) * step; t < end; t += step) xs.push(t);
-      const xl = (t) => { const dt = new Date(t); return dt.getHours() === 0 && hours > 24 ? DAYS[(dt.getDay() + 6) % 7] : `${fmt(dt.getHours() * 60)}`; };
-      return `<div class="graph">${head}
-        <div class="gwrap"><div class="gy">${ys.map((y) => `<span style="top:${(Y(y) / GH) * 100}%">${y}°</span>`).join('')}</div>
+      if (pen && room.length) d += `H${X(stop).toFixed(1)}`; // the sensor holds its last value
+      this._gm = { start, end, now, room, day, presets: data.presets, days: data.days, Y };
+      const ys = [G_LO, (G_LO + G_HI) / 2, G_HI];
+      const today = !this._gy;
+      return frame(`<div class="gy">${ys.map((y) => `<span style="top:${(Y(y) / GH) * 100}%">${y}°</span>`).join('')}</div>`, `
           <div class="gplot">
             <svg viewBox="0 0 1000 ${GH}" preserveAspectRatio="none">
               ${ys.map((y) => `<line class="gl" x1="0" x2="1000" y1="${Y(y)}" y2="${Y(y)}"/>`).join('')}
-              ${segs.map((x) => `<path class="ts" d="M${X(x.a).toFixed(1)},${Y(x.v).toFixed(1)}H${X(x.b).toFixed(1)}" style="stroke:${x.c}"/>`).join('')}
+              ${bars}
               ${d ? `<path class="rl" d="${d}"/>` : ''}
             </svg>
-            ${lastV != null ? `<span class="gdot" style="left:100%;top:${(Y(lastV) / GH) * 100}%"></span>` : ''}
+            ${today ? `<span class="gnow" style="left:${X(now) / 10}%"></span>` : ''}
+            ${lastV != null && today ? `<span class="gdot" style="left:${X(now) / 10}%;top:${(Y(lastV) / GH) * 100}%"></span>` : ''}
             <span class="gcross"></span><span class="gdot hd"></span><div class="gtip"></div>
-            <div class="gx">${xs.map((t) => `<span style="left:${X(t) / 10}%">${xl(t)}</span>`).join('')}</div>
-          </div><span></span></div></div>`;
+            <div class="gx ticks">${Array.from({ length: 25 }, (_, hr) => `<span class="hr${hr % 2 ? '' : ' m2'}${hr % 3 ? '' : ' m3'}${hr % 6 ? '' : ' m6'}" style="left:${(hr / 24) * 100}%">${hr}</span>`).join('')}</div>
+          </div>`);
     }
     _gHover(fx) {
       this._hx = fx;
@@ -245,9 +245,9 @@
       if (!m || !gp) return;
       if (fx == null) { gp.classList.remove('hov'); return; }
       const t = m.start + fx * (m.end - m.start);
-      let r = null; // last reading at or before t
-      for (const p of m.room) { if (p.t > t) break; r = isNaN(p.v) ? null : p.v; }
-      const sg = m.segs.find((x) => t >= x.a && t < x.b) || m.segs[m.segs.length - 1];
+      let r = null; // last reading at or before t (none in the future)
+      if (t <= m.now) for (const p of m.room) { if (p.t > t) break; r = isNaN(p.v) ? null : p.v; }
+      const sg = m.presets[+m.days[m.day][Math.min(SLOTS - 1, Math.floor(fx * SLOTS))]];
       const dt = new Date(t), pct = `${fx * 100}%`;
       gp.querySelector('.gcross').style.left = pct;
       const dot = gp.querySelector('.gdot.hd');
@@ -255,7 +255,7 @@
       const tip = gp.querySelector('.gtip');
       tip.innerHTML = `<div class="tt">${DAYS[(dt.getDay() + 6) % 7]} ${fmt(dt.getHours() * 60 + dt.getMinutes())}</div>
         <div><i class="kr"></i><b>${r == null ? '—' : r.toFixed(1) + '°'}</b> Room</div>
-        <div><i style="background:${sg.c}"></i><b>${sg.v.toFixed(1)}°</b> ${esc(sg.n)}</div>`;
+        <div><i style="background:${sg.color}"></i><b>${(+sg.temp).toFixed(1)}°</b> ${esc(sg.name)}${t > m.now ? ' (planned)' : ''}</div>`;
       tip.style.left = pct; tip.classList.toggle('flip', fx > 0.6);
       gp.classList.add('hov');
     }
@@ -431,7 +431,7 @@
       root.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => { this._bt = Math.max(5, Math.min(30, this._bt + 0.5 * +b.dataset.b)); this._render(); }));
       root.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { this._bm = +b.dataset.m; this._render(); }));
       if (refocus) root.querySelector(`[data-a="${refocus}"]`)?.focus({ preventScroll: true });
-      root.querySelectorAll('[data-gh]').forEach((b) => b.addEventListener('click', () => { this._gh = +b.dataset.gh; this._render(); }));
+      root.querySelectorAll('[data-gy]').forEach((b) => b.addEventListener('click', () => { this._gy = b.dataset.gy === '1'; this._render(); }));
       const gp = root.querySelector('.gplot');
       if (gp) {
         gp.addEventListener('pointermove', (e) => { const r = gp.getBoundingClientRect(); if (r.width) this._gHover(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))); });
@@ -511,7 +511,8 @@
   .gplot{position:relative;height:${GH}px;margin-bottom:18px;touch-action:pan-y}
   .gplot svg{width:100%;height:${GH}px;display:block;overflow:visible}
   .gl{stroke:var(--ln);stroke-width:1;vector-effect:non-scaling-stroke}
-  .ts{fill:none;stroke-width:3;vector-effect:non-scaling-stroke;stroke-linecap:round}
+  .eq{opacity:.45}.eq.fut{opacity:.18}
+  .gnow{position:absolute;top:0;bottom:0;width:2px;background:var(--txt);opacity:.5;transform:translateX(-1px);pointer-events:none}
   .rl{fill:none;stroke:var(--txt);stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
   .gdot{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--txt);transform:translate(-50%,-50%);box-shadow:0 0 0 2px var(--card-background-color,#fff);pointer-events:none}
   .gdot.hd,.gcross,.gtip{display:none}
@@ -520,7 +521,7 @@
   .gtip{position:absolute;top:4px;transform:translateX(12px);z-index:2;background:var(--card-background-color,#fff);border:1px solid var(--ln);border-radius:8px;padding:6px 9px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.12);white-space:nowrap;color:var(--mut);pointer-events:none}
   .gtip.flip{transform:translateX(calc(-100% - 12px))}
   .gtip .tt{font-size:11px;margin-bottom:3px}.gtip b{color:var(--txt);margin:0 3px 0 6px}.gtip i{vertical-align:middle}
-  .gx{position:absolute;left:0;right:0;top:${GH + 6}px;font-size:10px;color:var(--mut)}.gx span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+  .gx{position:absolute;left:0;right:0;top:${GH + 4}px;height:14px;font-size:10px;color:var(--mut)}
   .valves{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)}
   .valve{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--bg2);padding:5px 10px;border-radius:9px}
   .valve b{font-weight:600}
@@ -540,7 +541,6 @@
     { name: 'climates', selector: { entity: { multiple: true, filter: { domain: 'climate' } } } },
     { name: 'temperature_sensor', selector: { entity: { filter: { domain: 'sensor', device_class: 'temperature' } } } },
     { name: 'show_graph', selector: { boolean: {} } },
-    { name: 'graph_hours', selector: { select: { mode: 'dropdown', options: GRAPH_HOURS.map((h) => ({ value: String(h), label: `${h} hours` })) } } },
     { name: 'mode', selector: { select: { mode: 'dropdown', options: [
       { value: 'native', label: 'Native – program the valves' },
       { value: 'ha', label: 'HA – Home Assistant sets the temperature' },
@@ -555,8 +555,7 @@
     icon: ['Icon', 'Shown next to the title. Leave empty for mdi:thermometer.'],
     climates: ['Valves', 'All valves on this card get the same schedule.'],
     temperature_sensor: ['Room temperature sensor', 'Optional. Shown in the header next to the target temperature.'],
-    show_graph: ['Show temperature history', 'Room temperature and the scheduled target over time. Needs a room temperature sensor.'],
-    graph_hours: ['History range', 'Default range of the graph; 6 / 12 / 24 / 48 h can also be picked on the card.'],
+    show_graph: ['Show temperature history', 'Today (or yesterday) under the schedule: room temperature and the target per half hour. Needs a room temperature sensor.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
     nightly_resync: ['Re-program valves every night', 'Off: valves are only re-programmed when you save, press Re-sync, or a valve comes back after a battery change.'],
@@ -603,7 +602,7 @@
       if (!this._cfg) return;
       if (!this.shadowRoot) this._build();
       this._form.hass = this._hass;
-      this._form.data = { mode: 'native', show_graph: true, graph_hours: '24', ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
+      this._form.data = { mode: 'native', show_graph: true, ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
       this._renderNote();
       this._syncPresets();
     }

@@ -156,29 +156,34 @@ test('editor: shows saved presets, undo, only last unused preset removable', () 
   ed.hass = hassWith(saved({ days: Array(7).fill('2'.repeat(48)) })).hass;
   assert.equal(E.querySelector('.del').disabled, true, 'last preset in use');
   assert.deepEqual(plain(E.querySelector('ha-form').schema.map((x) => x.name)),
-    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'graph_hours', 'mode', 'oper_mode', 'nightly_resync', 'z2m_base_topic']);
+    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'mode', 'oper_mode', 'nightly_resync', 'z2m_base_topic']);
 });
 
-test('history graph: loads history, preset-coloured target, range buttons, hover', async () => {
+test('history graph: one day aligned with the rows, 48 preset-coloured bars, yesterday/today, hover', async () => {
   const w = env(); const { hass } = hassWith(saved(), { 'sensor.t': { state: '21.4', attributes: {}, last_updated: new Date().toISOString() } });
   const now = Date.now() / 1000, asked = [];
   hass.callWS = async (msg) => { asked.push(msg); return { 'sensor.t': [0, 1, 2, 3, 4, 5].map((i) => ({ s: String(19 + i / 2), lu: now - (40 - i * 7) * 3600 })) }; };
   const { c, q, R } = mount(w, { temperature_sensor: 'sensor.t' }, hass);
   await tick(); await tick();
   assert.equal(asked[0].type, 'history/history_during_period');
-  assert.deepEqual(plain(asked[0].entity_ids), ['sensor.t']);
-  assert.ok(q('.graph .rl'), 'room line drawn');
-  const colors = new Set([...R.querySelectorAll('.ts')].map((p) => p.style.stroke));
-  assert.ok(colors.size >= 1 && ![...colors].includes(''), 'target segments carry preset colours');
-  assert.equal(q('.gh.on').textContent, '24 h');
-  q('[data-gh="6"]').click();
-  assert.equal(q('.gh.on').textContent, '6 h');
+  const y0 = new Date(); y0.setHours(0, 0, 0, 0); y0.setDate(y0.getDate() - 1);
+  assert.equal(Date.parse(asked[0].start_time), y0.getTime(), 'history starts yesterday 00:00');
+  const bars = [...R.querySelectorAll('rect.eq')];
+  assert.equal(bars.length, 48, 'one bar per half-hour cell');
+  const today = (new Date().getDay() + 6) % 7, row = saved().attributes.days[today];
+  bars.forEach((b, i) => assert.equal(b.style.fill, P[+row[i]].color, `bar ${i} has the colour of cell ${i}`));
+  assert.equal(q('.gwrap').children.length, 3, 'same three columns as a schedule row');
+  assert.ok(q('.gnow'), 'now line on today');
+  assert.equal(q('.gh.on').textContent, 'Today');
+  q('[data-gy="1"]').click();
+  assert.equal(q('.gh.on').textContent, 'Yesterday');
+  assert.equal(q('.gnow'), null, 'no now line on yesterday');
+  assert.equal(R.querySelectorAll('rect.eq.fut').length, 0, 'yesterday has no planned part');
   c._gHover(0.5);
   assert.ok(q('.gplot').classList.contains('hov'));
   assert.match(q('.gtip').textContent, /Room/);
   c._gHover(null);
-  assert.ok(!q('.gplot').classList.contains('hov'));
-  assert.equal(asked.length, 1, 'history fetched once, range buttons slice it');
+  assert.equal(asked.length, 1, 'history fetched once for both days');
 });
 
 test('graph off without sensor or with show_graph: false; compact rows class untouched in view', () => {

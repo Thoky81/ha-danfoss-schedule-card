@@ -54,8 +54,7 @@ schedule_id: living_room
 title: Living room
 icon: mdi:thermometer    # any mdi: icon, or an emoji
 temperature_sensor: sensor.living_room_temperature   # optional, room temperature in the header
-show_graph: true         # room temperature + target history at the bottom (needs temperature_sensor)
-graph_hours: 24          # default range: 6 | 12 | 24 | 48
+show_graph: true         # today's room temperature + target under the schedule (needs temperature_sensor)
 climates:
   - climate.living_room_trv_1
   - climate.living_room_trv_2
@@ -99,7 +98,7 @@ The card is **view-only** by default, so a stray tap (or a swipe on mobile) can'
 - Valve dots: green = programmed, orange blinking = programming in progress, red = programming failed **or** the valve is `unavailable` in HA right now. Hover a dot for the reason.
 
 ### Temperature history
-With a room temperature sensor set, the bottom of the card shows its history together with the scheduled **target**, coloured by preset like the grid, so you can see how the room follows the schedule. Pick **6 h / 12 h / 24 h / 48 h** on the card (default in the editor); hover for the exact values. The data comes from Home Assistant's history (recorder). Turn it off with *Show temperature history* in the editor.
+With a room temperature sensor set, the bottom of the card shows **today** (or **yesterday**) laid out exactly like the schedule rows above: one column per half hour, in the colour and height of that half hour's target, with the room temperature as a line over it. So each column sits right under its cell in the grid. The rest of today is faded (planned), a line marks *now*. The scale is fixed at 5–35° (the Ally's range) on every card, so cards compare at a glance. Hover for exact values. The data comes from Home Assistant's history (recorder). Turn it off with *Show temperature history* in the editor.
 
 ### Boost
 **🔥 Boost** sets all valves of the card to a temperature for 30 min – 3 h, or until the next block change, then returns them to the schedule. While it runs the header shows e.g. *24.0° Boost until 16:30*, and **Cancel boost** ends it early.
