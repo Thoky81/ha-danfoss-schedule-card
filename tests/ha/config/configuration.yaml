@@ -1,0 +1,28 @@
+default_config:
+http:
+  server_port: 8125
+python_script:
+lovelace:
+  resource_mode: yaml
+  resources:
+    - url: /local/danfoss-schedule-card.js
+      type: module
+  dashboards:
+    danfoss-test:
+      mode: yaml
+      filename: danfoss.yaml
+      title: Danfoss
+      show_in_sidebar: true
+automation:
+  - alias: fake valve updates
+    triggers:
+      - trigger: time_pattern
+        seconds: "/3"
+    actions:
+      - action: python_script.fake
+  - alias: fake init
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: python_script.fake

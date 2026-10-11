@@ -4,3 +4,17 @@ node_modules/
 .vscode/
 screenshots/
 __pycache__/
+tests/ha/venv/
+tests/ha/config/www/
+tests/ha/config/.storage/
+tests/ha/config/*.db*
+tests/ha/config/*.log*
+tests/ha/config/.HA_VERSION
+tests/ha/config/blueprints/
+tests/ha/config/automations.yaml
+tests/ha/config/scripts.yaml
+tests/ha/config/scenes.yaml
+tests/ha/config/secrets.yaml
+tests/ha/config/tts/
+tests/ha/tokens.json
+tests/ha/*.png

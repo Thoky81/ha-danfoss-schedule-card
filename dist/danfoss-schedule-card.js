@@ -14,7 +14,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.8.2';
+  const VERSION = '1.8.3';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -75,8 +75,11 @@
       if (!old || watch.some((id) => old.states[id] !== h.states[id])) { if (!this._hold()) this._render(); }
     }
 
-    connectedCallback() { this._timer = setInterval(() => { if (!this._hold()) this._render(); }, 60000); }
-    disconnectedCallback() { clearInterval(this._timer); }
+    connectedCallback() {
+      this._timer = setInterval(() => { if (!this._hold()) this._render(); }, 60000);
+      if (this._ro) this._ro.observe(this._card);
+    }
+    disconnectedCallback() { clearInterval(this._timer); this._ro?.disconnect(); }
 
     _hold() { return this._painting; }
 
@@ -224,7 +227,7 @@
           <div class="cnt${n > MAX_BLOCKS ? ' over' : ''}" data-d="${d}">${n}/${MAX_BLOCKS}</div></div>`;
       }).join('');
 
-      /* every hour is rendered; CSS container queries hide some when the card is narrow */
+      /* every hour is rendered; the w300/w380/w600 width classes hide some when the card is narrow */
       const ticks = Array.from({ length: 25 }, (_, h) => `<span class="hr${h % 2 ? '' : ' m2'}${h % 3 ? '' : ' m3'}${h % 6 ? '' : ' m6'}" style="left:${(h / 24) * 100}%">${h}</span>`).join('');
 
       const cfgC = {}; (this._cfg.climates || []).forEach((x) => { if (typeof x !== 'string') cfgC[x.entity] = x; });
@@ -297,6 +300,13 @@
       if (!this._card) {
         this.shadowRoot.innerHTML = `<style>${CSS}</style><ha-card></ha-card>`;
         this._card = this.shadowRoot.querySelector('ha-card');
+        /* width classes instead of CSS container queries: in WebKit (Safari), replacing the
+           content of a container-query element makes a scrolled dashboard jump to the top */
+        this._ro = typeof ResizeObserver === 'function' && new ResizeObserver(([e]) => {
+          const w = e.contentRect.width, cl = this._card.classList;
+          cl.toggle('w300', w >= 300); cl.toggle('w380', w >= 380); cl.toggle('w600', w >= 600);
+        });
+        if (this._ro && this.isConnected) this._ro.observe(this._card);
       }
       if (html === this._html) return; // most HA updates change nothing visible
       this._html = html;
@@ -327,7 +337,7 @@
 
   const CSS = `
   :host{--bg2:var(--secondary-background-color,#2a2a2e);--txt:var(--primary-text-color,#f2f2f4);--mut:var(--secondary-text-color,#8e8e96);--acc:var(--primary-color,#0a84ff);--ln:var(--divider-color,#38383d)}
-  ha-card{display:block;container-type:inline-size;padding:16px;position:relative;color:var(--txt);overflow:hidden;background:var(--ha-card-background,var(--card-background-color,#1f1f22));border-radius:var(--ha-card-border-radius,12px)}
+  ha-card{display:block;padding:16px;position:relative;color:var(--txt);overflow:hidden;background:var(--ha-card-background,var(--card-background-color,#1f1f22));border-radius:var(--ha-card-border-radius,12px)}
   .head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
   .ic{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-size:20px;background:rgba(255,138,61,.16);color:#ff8a3d;flex:none}
   .ic ha-icon{--mdc-icon-size:24px}
@@ -355,9 +365,9 @@
   .ticks{position:relative;height:14px;color:var(--mut);font-size:10px}
   .ticks span{position:absolute;transform:translateX(-50%)}.ticks span:first-child{transform:none}.ticks span:last-child{transform:translateX(-100%)}
   .ticks .hr{display:none}.ticks .m6{display:block}
-  @container (min-width:300px){.ticks .m3{display:block}}
-  @container (min-width:380px){.ticks .m3{display:none}.ticks .m2{display:block}}
-  @container (min-width:600px){.ticks .hr{display:block}}
+  .w300 .ticks .m3{display:block}
+  .w380 .ticks .m3{display:none}.w380 .ticks .m2{display:block}
+  .w600 .ticks .hr{display:block}
   .grid{user-select:none}.grid.editing{touch-action:none}
   .row{margin:3px 0}
   .dl{font-weight:600;color:var(--mut);font-size:12px}.dl.today{color:var(--acc)}

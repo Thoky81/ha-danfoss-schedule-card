@@ -1,0 +1,49 @@
+views:
+  - title: Danfoss
+    path: test
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        column_span: 4
+        cards:
+          - type: custom:danfoss-schedule-card
+            schedule_id: room0
+            title: Room 0
+            icon: mdi:sofa
+            temperature_sensor: sensor.room0_temperature
+            climates: [climate.room0_trv0, climate.room0_trv1, climate.room0_trv2]
+            grid_options:
+              columns: full
+          - type: custom:danfoss-schedule-card
+            schedule_id: room1
+            title: Room 1
+            icon: mdi:sofa
+            temperature_sensor: sensor.room1_temperature
+            climates: [climate.room1_trv0, climate.room1_trv1, climate.room1_trv2]
+            grid_options:
+              columns: full
+          - type: custom:danfoss-schedule-card
+            schedule_id: room2
+            title: Room 2
+            icon: mdi:sofa
+            temperature_sensor: sensor.room2_temperature
+            climates: [climate.room2_trv0, climate.room2_trv1, climate.room2_trv2]
+            grid_options:
+              columns: full
+          - type: custom:danfoss-schedule-card
+            schedule_id: room3
+            title: Room 3
+            icon: mdi:sofa
+            temperature_sensor: sensor.room3_temperature
+            climates: [climate.room3_trv0, climate.room3_trv1, climate.room3_trv2]
+            grid_options:
+              columns: full
+          - type: custom:danfoss-schedule-card
+            schedule_id: room4
+            title: Room 4
+            icon: mdi:sofa
+            temperature_sensor: sensor.room4_temperature
+            climates: [climate.room4_trv0, climate.room4_trv1, climate.room4_trv2]
+            grid_options:
+              columns: full
