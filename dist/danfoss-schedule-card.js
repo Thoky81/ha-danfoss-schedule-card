@@ -14,7 +14,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.8.1';
+  const VERSION = '1.8.2';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -190,7 +190,13 @@
       const g = this.shadowRoot.querySelector('.grid');
       g.addEventListener('pointerdown', (e) => { if (!e.target.classList.contains('cell')) return; e.preventDefault(); g.setPointerCapture(e.pointerId); this._painting = true; this._paintAt(e.clientX, e.clientY); });
       g.addEventListener('pointermove', (e) => { if (this._painting) this._paintAt(e.clientX, e.clientY); });
-      const up = () => { if (!this._painting) return; this._painting = false; this._anchor = null; this._snap = null; this._render(); };
+      const up = () => {
+        if (!this._painting) return;
+        this._painting = false; this._anchor = null; this._snap = null;
+        this.shadowRoot.querySelector('.tip').style.display = 'none';
+        this._html = null; // cells were recoloured directly while painting
+        this._render();
+      };
       g.addEventListener('pointerup', up); g.addEventListener('pointercancel', up);
     }
 
@@ -263,8 +269,7 @@
           <span class="sp"></span>
           ${ent && mode === 'native' && !pc ? '<button class="btn" data-a="resync">Re-sync</button>' : ''}
           ${pc || !ent ? saveBtn : ''}`;
-      this.shadowRoot.innerHTML = `<style>${CSS}</style>
-      <ha-card>
+      const html = `
         <div class="head">
           <div class="ic">${icon.includes(':') ? `<ha-icon icon="${esc(icon)}"></ha-icon>` : esc(icon)}</div>
           <div class="ttl"><div class="t">${esc(this._cfg.title)}</div>
@@ -284,8 +289,19 @@
         ${invalid ? `<div class="warn">⚠ ${esc(invalid)}</div>` : ''}
         ${this._msg ? `<div class="msg ${this._msg.err ? 'err' : ''}">${esc(this._msg.text)}</div>` : ''}
         <div class="valves">${valves || '<span class="s">No climates configured</span>'}</div>
-        <div class="tip"></div>
-      </ha-card>`;
+        <div class="tip"></div>`;
+
+      /* <ha-card> is created once: a new ha-card has no height until it has rendered its own
+         shadow DOM, and a layout read in that moment makes the browser clamp the page's
+         scroll position (the dashboard jumps to the top). Only its contents are replaced. */
+      if (!this._card) {
+        this.shadowRoot.innerHTML = `<style>${CSS}</style><ha-card></ha-card>`;
+        this._card = this.shadowRoot.querySelector('ha-card');
+      }
+      if (html === this._html) return; // most HA updates change nothing visible
+      this._html = html;
+      const ae = this.shadowRoot.activeElement, refocus = ae && ae.dataset && ae.dataset.a;
+      this._card.innerHTML = html;
 
       const root = this.shadowRoot;
       if (ed) root.querySelectorAll('.chip').forEach((el) => el.addEventListener('click', () => { this._sel = +el.dataset.i; this._render(); }));
@@ -304,6 +320,7 @@
       }));
       root.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => { this._bt = Math.max(5, Math.min(30, this._bt + 0.5 * +b.dataset.b)); this._render(); }));
       root.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { this._bm = +b.dataset.m; this._render(); }));
+      if (refocus) root.querySelector(`[data-a="${refocus}"]`)?.focus({ preventScroll: true });
       this._bindGrid();
     }
   }

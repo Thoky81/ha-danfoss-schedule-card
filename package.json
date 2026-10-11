@@ -1,0 +1,11 @@
+{
+  "name": "ha-danfoss-schedule-card",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/card.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "24.1.3"
+  }
+}

@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><!-- Open in Chrome: the title shows scrollY after each live update; it must stay at the start value. ha-card below mimics HA (Lit renders its shadow DOM one microtask late). --><style>
+body{margin:0;background:#f5f5f5;font:14px sans-serif;padding:12px}.w{width:900px;margin-bottom:12px}
+</style></head><body>
+<script>
+customElements.define('ha-card', class extends HTMLElement {
+  connectedCallback(){ if(!this.shadowRoot){ this.attachShadow({mode:'open'}); Promise.resolve().then(()=>{ this.shadowRoot.innerHTML='<style>:host{display:block}</style><slot></slot>'; }); } }
+});
+</script>
+<script src="../dist/danfoss-schedule-card.js"></script>
+<script>
+const P=[{name:'Comfort',temp:22,color:'#ff8a3d'},{name:'Away',temp:15,color:'#8e8e93'}];
+const ent={state:'ok',attributes:{presets:P,days:Array(7).fill('0'.repeat(16)+'1'.repeat(32)),climates:['climate.a'],status:{'climate.a':{state:'ok'}}}};
+const mk=(t)=>({states:{'pyscript.climate_schedule_x':ent,'climate.a':{state:'heat',attributes:{friendly_name:'TRV',current_temperature:t}},'sensor.t':{state:String(t),attributes:{}}},entities:{}});
+const cards=[];
+for(let i=0;i<6;i++){const d=document.createElement('div');d.className='w';const c=document.createElement('danfoss-schedule-card');d.appendChild(c);document.body.appendChild(d);c.setConfig({schedule_id:'x',title:'Room '+i,climates:['climate.a'],temperature_sensor:'sensor.t',icon:'mdi:sofa'});c.hass=mk(20);cards.push(c);}
+const log=[];
+// focus a button in the last card (as if the user clicked it earlier)
+let n=0;
+function tick(){cards.forEach(c=>c.hass=mk(20+n/10)); void document.body.offsetHeight; n++;
+  setTimeout(()=>{void document.body.offsetHeight;log.push('update'+n+' '+scrollY); if(n<5) setTimeout(tick,50); else document.title=log.join(' | ');},30);}
+setTimeout(()=>{window.scrollTo(0,document.body.scrollHeight); log.push('start '+scrollY); setTimeout(tick,50);},100);
+</script></body></html>
