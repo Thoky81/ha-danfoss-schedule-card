@@ -101,6 +101,10 @@ The card is **view-only** by default, so a stray tap (or a swipe on mobile) can'
 ### Temperature history
 With a room temperature sensor set, the bottom of the card shows **today** (or **yesterday**) laid out exactly like the schedule rows above: one column per half hour, in the colour and height of that half hour's target, with the room temperature as a line over it. So each column sits right under its cell in the grid. The rest of today is faded (planned), a line marks *now*. The scale is fixed at 5–35° (the Ally's range) on every card, so cards compare at a glance. Hover for exact values. The data comes from Home Assistant's history (recorder). Turn it off with *Show temperature history* in the editor.
 
+### Valve alerts (optional)
+[`extras/danfoss_alerts.yaml`](extras/danfoss_alerts.yaml) is a Home Assistant package, independent of the card, that sends a phone notification for each **new** valve problem and an "all OK" when they're solved:
+error codes (ZHA `sensor.danfoss_*_software_error`, Z2M `sensor.danfoss_*_system_status_code`), a valve without contact for 30 min, battery under 20 %, and valves the schedule couldn't program. Put it in `/config/packages/`, set your `notify.mobile_app_…` action in it, and enable packages in `configuration.yaml` (`homeassistant: packages: !include_dir_named packages`). Valves are matched by entity ids starting with `danfoss_`.
+
 ### Boost
 **🔥 Boost** sets all valves of the card to a temperature for 30 min – 3 h, or until the next block change, then returns them to the schedule. While it runs the header shows e.g. *24.0° Boost until 16:30*, and **Cancel boost** ends it early.
 

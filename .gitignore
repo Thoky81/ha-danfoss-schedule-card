@@ -18,3 +18,4 @@ tests/ha/config/secrets.yaml
 tests/ha/config/tts/
 tests/ha/tokens.json
 tests/ha/*.png
+local/

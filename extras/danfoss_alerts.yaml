@@ -1,0 +1,81 @@
+# Danfoss Ally valve alerts – independent of the schedule card.
+#
+# 1. sensor.danfoss_problems collects every current problem of all danfoss_* entities:
+#    - error code: ZHA  sensor.danfoss_*_software_error     (state "good" when fine; error bits as attributes)
+#                  Z2M  sensor.danfoss_*_system_status_code (state "ok" when fine; e.g. "motor_error,low_battery")
+#    - climate.danfoss_* unavailable (no contact) for more than 30 minutes
+#    - sensor.danfoss_*_battery below 20 %
+#    - a valve the schedule backend could not program (red dot on the card)
+#    New valves are picked up automatically as long as their entity ids start with "danfoss_".
+# 2. The automation sends each NEW problem once to the phone, and "all OK" when everything is clear again.
+#
+# Install as a package: put this file in /config/packages/ and make sure configuration.yaml has
+#   homeassistant:
+#     packages: !include_dir_named packages
+# then restart Home Assistant.
+
+template:
+  - sensor:
+      - name: Danfoss problems
+        unique_id: danfoss_problems
+        icon: mdi:radiator-off
+        state: "{{ (this.attributes.problems | default([])) | count }}"
+        attributes:
+          problems: >-
+            {% set ns = namespace(p=[]) %}
+            {% for s in states.sensor | selectattr('entity_id', 'search', '^sensor\.danfoss_.*_(software_error|system_status_code)$') %}
+              {% if s.state not in ['good', 'ok', 'unknown', 'unavailable', ''] %}
+                {% set ns2 = namespace(bits=[]) %}
+                {% for k, v in s.attributes.items() if v is sameas true %}{% set ns2.bits = ns2.bits + [k] %}{% endfor %}
+                {% set ns.p = ns.p + [s.name ~ ': ' ~ ('error' if s.state == 'something' else s.state) ~ ((' (' ~ ns2.bits | join(', ') ~ ')') if ns2.bits else '')] %}
+              {% endif %}
+            {% endfor %}
+            {% for s in states.climate | selectattr('entity_id', 'search', '^climate\.danfoss_') %}
+              {% if s.state == 'unavailable' and now() - s.last_changed > timedelta(minutes=30) %}
+                {% set ns.p = ns.p + [s.name ~ ': no contact since ' ~ as_local(s.last_changed).strftime('%d.%m. %H:%M')] %}
+              {% endif %}
+            {% endfor %}
+            {% for s in states.sensor | selectattr('entity_id', 'search', '^sensor\.danfoss_.*_battery$') %}
+              {% if s.state | is_number and s.state | float < 20 %}
+                {% set ns.p = ns.p + [s.name ~ ': low (under 20 %)'] %}
+              {% endif %}
+            {% endfor %}
+            {% for s in states.pyscript | selectattr('entity_id', 'search', '^pyscript\.climate_schedule_') %}
+              {% for v, st in (s.attributes.status or {}).items() if st.state == 'error' %}
+                {% set ns.p = ns.p + [(state_attr(v, 'friendly_name') or v) ~ ': schedule not programmed (' ~ st.msg ~ ')'] %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.p }}
+
+automation:
+  - id: danfoss_problems_notify
+    alias: Danfoss – notify valve problems
+    description: Sends each new Danfoss valve problem once, and a message when all are solved.
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: sensor.danfoss_problems
+        attribute: problems
+    conditions:
+      # not after a restart / reload of the template sensor
+      - "{{ trigger.from_state is not none and trigger.from_state.state not in ['unknown', 'unavailable'] }}"
+    actions:
+      - variables:
+          before: "{{ trigger.from_state.attributes.problems or [] }}"
+          after: "{{ trigger.to_state.attributes.problems or [] }}"
+          new: "{{ after | reject('in', before) | list }}"
+      - if: "{{ new | count > 0 }}"
+        then:
+          - action: notify.mobile_app_YOUR_PHONE
+            data:
+              title: "Danfoss: {{ new | count }} problem{{ 's' if new | count > 1 else '' }}"
+              message: "{{ new | join('\n') }}"
+              data:
+                push:
+                  interruption-level: time-sensitive
+      - if: "{{ before | count > 0 and after | count == 0 }}"
+        then:
+          - action: notify.mobile_app_YOUR_PHONE
+            data:
+              title: "Danfoss: all OK"
+              message: "All valve problems are solved."
