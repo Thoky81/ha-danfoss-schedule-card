@@ -193,6 +193,23 @@ test('graph off without sensor or with show_graph: false; compact rows class unt
   assert.match(SRC, /\.cell\{height:20px\}\.grid\.editing \.cell\{height:30px/);
 });
 
+test('valve chips show the set temperature and flag a mismatch with the schedule / boost', () => {
+  const w = env();
+  const flat = saved({ days: Array(7).fill('0'.repeat(48)) }); // Comfort 22° all week: no block change, no grace
+  const valve = (sp) => ({ state: 'heat', attributes: { friendly_name: 'TRV', current_temperature: 21, temperature: sp } });
+  let { q } = mount(w, {}, hassWith(flat, { 'climate.a': valve(22) }).hass);
+  assert.match(q('.set').textContent, /set 22\.0°/);
+  assert.ok(!q('.set').classList.contains('off'));
+  ({ q } = mount(w, {}, hassWith(flat, { 'climate.a': valve(17) }).hass));
+  assert.ok(q('.set').classList.contains('off'));
+  assert.match(q('.set').title, /set to 17\.0°, the schedule says 22\.0°/);
+  const boosted = saved({ days: Array(7).fill('0'.repeat(48)), boost: { temp: 24.5, until: '2030-01-01T00:00:00', kind: 'timed' } });
+  ({ q } = mount(w, {}, hassWith(boosted, { 'climate.a': valve(24.5) }).hass));
+  assert.ok(!q('.set').classList.contains('off'), 'boost is the expected value');
+  ({ q } = mount(w, {}, hassWith(flat, { 'climate.a': { state: 'unavailable', attributes: { temperature: 22 } } }).hass));
+  assert.equal(q('.set'), null, 'no setpoint for an unavailable valve');
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }

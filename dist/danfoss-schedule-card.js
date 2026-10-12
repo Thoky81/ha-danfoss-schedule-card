@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.10
+ * danfoss-schedule-card  v1.11
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -15,7 +15,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.10.0';
+  const VERSION = '1.11.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -330,6 +330,17 @@
       const ticks = Array.from({ length: 25 }, (_, h) => `<span class="hr${h % 2 ? '' : ' m2'}${h % 3 ? '' : ' m3'}${h % 6 ? '' : ' m6'}" style="left:${(h / 24) * 100}%">${h}</span>`).join('');
 
       const cfgC = {}; (this._cfg.climates || []).forEach((x) => { if (typeof x !== 'string') cfgC[x.entity] = x; });
+      /* what the valves should be set to now: the boost, else the saved schedule's current block.
+         Right after a block change the valve reports its new setpoint with a delay: no warning then. */
+      const sv = this._saved(), bo = ent?.attributes.boost;
+      let want = null, grace = false;
+      if (bo) want = +bo.temp;
+      else if (sv) {
+        const c = Math.floor(np.min / SLOT_MIN), tAt = (d, k) => +sv.presets[+sv.days[d][k]].temp;
+        want = tAt(np.day, c);
+        const prev = c ? tAt(np.day, c - 1) : tAt((np.day + 6) % 7, SLOTS - 1);
+        grace = prev !== want && np.min % SLOT_MIN < 10;
+      }
       const valves = this._climates().map((id) => {
         const st = this._hass?.states[id], s = status[id];
         const plat = cfgC[id]?.z2m ? 'mqtt' : cfgC[id]?.ieee ? 'zha' : this._hass?.entities?.[id]?.platform;
@@ -341,7 +352,12 @@
         const title = !st ? 'Entity not found in Home Assistant'
           : st.state === 'unavailable' ? `Valve unavailable in Home Assistant (no contact). Last programming: ${last}`
           : mode === 'ha' ? 'HA-driven' : last;
-        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${via ? `<span class="via">${via}</span>` : ''}</div>`;
+        const sp = st && st.state !== 'unavailable' ? parseFloat(st.attributes.temperature) : NaN;
+        const off = !isNaN(sp) && want != null && !grace && Math.abs(sp - want) > 0.05;
+        const set = isNaN(sp) ? '' : `<span class="set${off ? ' off' : ''}" title="${esc(off
+          ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : 'the schedule'} says ${want.toFixed(1)}° (changed by hand on the valve, or the schedule wasn't applied)`
+          : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${off ? ' ⚠' : ''}</span>`;
+        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
 
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
@@ -525,6 +541,7 @@
   .valves{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)}
   .valve{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--bg2);padding:5px 10px;border-radius:9px}
   .valve b{font-weight:600}
+  .set{color:var(--mut);padding-left:6px;border-left:1px solid var(--ln)}.set.off{color:#e8890c;font-weight:600}
   .via{font-size:9px;font-weight:700;letter-spacing:.3px;padding:1px 4px;border-radius:4px;background:var(--ln);color:var(--mut)}
   .sd{width:8px;height:8px;border-radius:50%;background:var(--mut)}
   .sd.ok{background:#34c759}.sd.pending{background:#ff9f0a;animation:p 1s infinite alternate}.sd.error,.sd.err{background:#ff453a}.sd.ha{background:#ff9f0a}

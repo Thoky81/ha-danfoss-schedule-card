@@ -95,6 +95,7 @@ The card is **view-only** by default, so a stray tap (or a swipe on mobile) can'
 - **Save & program** sends the schedule to the valves and locks the card again; **Cancel** drops the changes.
 - The `n/6` counter on each row is the number of temperature blocks that day. Danfoss stores **at most 6 per day**. If any day is over the limit, the row turns red and Save is disabled.
 - Two adjacent presets with the same temperature count as one block.
+- Each valve chip shows the measured temperature and what the valve is **set** to. If the setpoint differs from the schedule (or a running boost) it turns amber with ⚠ – the valve was changed by hand, or the schedule wasn't applied. No warning in the first 10 minutes after a block change, while the valve reports its new setpoint.
 - Valve dots: green = programmed, orange blinking = programming in progress, red = programming failed **or** the valve is `unavailable` in HA right now. Hover a dot for the reason.
 
 ### Temperature history
