@@ -24,7 +24,7 @@ pyscript:
 Copy [`pyscript/climate_schedule.py`](pyscript/climate_schedule.py) to `/config/pyscript/`, restart HA (first time) or reload pyscript.
 Schedules are saved to `/config/climate_schedules.json`.
 
-Services: `pyscript.climate_schedule_save`, `pyscript.climate_schedule_push`, `pyscript.climate_schedule_delete`, `pyscript.climate_schedule_boost`, `pyscript.climate_schedule_boost_cancel`.
+Services: `pyscript.climate_schedule_save`, `pyscript.climate_schedule_push`, `pyscript.climate_schedule_delete`, `pyscript.climate_schedule_boost`, `pyscript.climate_schedule_boost_cancel`, `pyscript.climate_schedule_sync_time`.
 
 ## 2. Card
 
@@ -123,6 +123,7 @@ New presets are added at the end. Only the last preset can be removed, and only 
   - when a valve comes back from `unavailable` (60 s later, only that valve; ignored in the first 10 min after HA/pyscript starts, since a restart doesn't erase schedules)
   - every night at 03:15, **only if** *Re-program valves every night* (`nightly_resync: true`) is on. Off by default: once the schedule is final nothing needs to touch the valves, and re-writing it adds Zigbee traffic for no gain.
   - manually with **Re-sync**
+- **Valve clocks (ZHA):** ZHA doesn't set the Danfoss clock, so valves can run in UTC or without summer time and switch blocks hours late (the card's ⚠ tooltip then says *"the valve clock is probably 2 h behind"*). The backend writes the valve clock – UTC time, time zone and daylight-saving rules, like Zigbee2MQTT does – before every programming and once a day at 03:05 (only the clock, not the schedule). `pyscript.climate_schedule_sync_time` does it on demand. Zigbee2MQTT sets the clock itself.
 - Switching a schedule to `mode: ha`, or deleting it, puts the valves back into plain setpoint mode.
 
 ## First test (do this on one valve)

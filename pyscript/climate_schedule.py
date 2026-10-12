@@ -14,6 +14,10 @@ Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
   night at 03:15 only if the schedule has nightly_resync enabled.
 - mode "ha": HA sets climate.set_temperature at each block change
   (fallback if the on-valve schedule misbehaves).
+- clock: ZHA does not set the Danfoss clock, so the valves can run in UTC or
+  without daylight saving time and switch blocks hours late. Before every
+  programming and once a day the backend writes the valve's Time cluster the
+  way Zigbee2MQTT does (UTC time, zone offset, DST start/end/shift).
 - boost: all valves of a schedule get a temporary setpoint for N minutes
   (or until the next block change), then go back to the schedule.
 
@@ -34,6 +38,10 @@ STORE = "/config/climate_schedules.json"
 ENTITY_PREFIX = "pyscript.climate_schedule_"
 ENDPOINT = 1                 # Danfoss Ally thermostat endpoint
 THERMOSTAT = 513             # 0x0201
+TIME_CLUSTER = 10            # 0x000A, the valve's own clock
+# write order: zone and DST rules first, the time itself last
+TIME_ATTRS = [("time_zone", 2), ("dst_start", 3), ("dst_end", 4), ("dst_shift", 5), ("time_status", 1), ("time", 0)]
+TIME_SYNC = "cron(5 3 * * *)"   # daily clock sync for ZHA valves (Z2M does its own)
 CMD_SET_WEEKLY = 1           # SetWeeklySchedule
 CMD_CLEAR_WEEKLY = 3         # ClearWeeklySchedule
 ATTR_PROG_MODE = 0x0025      # programming_operation_mode, bit0 = schedule
@@ -76,6 +84,48 @@ def _write_store(path, data):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=1, ensure_ascii=False)
     os.replace(tmp, path)
+
+
+@pyscript_compile
+def _zigbee_time(tzname):
+    """ZCL Time cluster values for the local zone, like zigbee-herdsman's getTimeClusterAttributes."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(tzname)
+    epoch = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+
+    def off(dt):
+        return dt.astimezone(tz).utcoffset()
+
+    def change(a, b):  # first second in (a, b] with a different offset than a
+        oa = off(a)
+        while b - a > timedelta(seconds=1):
+            m = a + (b - a) / 2
+            if off(m) == oa:
+                a = m
+            else:
+                b = m
+        return b
+
+    def zsec(dt):
+        return int((dt - epoch).total_seconds())
+
+    y = now.year
+    jan, jul, dec = (datetime(y, 1, 1, tzinfo=timezone.utc), datetime(y, 7, 1, tzinfo=timezone.utc),
+                     datetime(y, 12, 31, 23, 59, tzinfo=timezone.utc))
+    std, dst = min(off(jan), off(jul)), max(off(jan), off(jul))
+    out = {"time": zsec(now), "time_status": 0x02, "time_zone": int(std.total_seconds()),
+           "dst_start": 0xFFFFFFFF, "dst_end": 0xFFFFFFFF, "dst_shift": 0}
+    if std != dst:
+        if off(jan) == std:  # northern hemisphere: summer time inside the year
+            start, end = change(jan, jul), change(jul, dec)
+        elif now < change(jan, jul):  # southern, still in the summer that began last year
+            start, end = change(datetime(y - 1, 7, 1, tzinfo=timezone.utc), datetime(y - 1, 12, 31, 23, 59, tzinfo=timezone.utc)), change(jan, jul)
+        else:
+            start, end = change(jul, dec), change(datetime(y + 1, 1, 1, tzinfo=timezone.utc), datetime(y + 1, 7, 1, tzinfo=timezone.utc))
+        out.update(dst_start=zsec(start), dst_end=zsec(end) - 1, dst_shift=int((dst - std).total_seconds()))
+    return out
 
 
 def save_store():
@@ -208,7 +258,18 @@ def zha_cmd(ieee, command, params=None):
     )
 
 
+def sync_time_zha(ieee):
+    vals = _zigbee_time(str(hass.config.time_zone))
+    for name, attr in TIME_ATTRS:
+        service.call(
+            "zha", "set_zigbee_cluster_attribute", blocking=True,
+            ieee=ieee, endpoint_id=ENDPOINT, cluster_id=TIME_CLUSTER,
+            cluster_type="in", attribute=attr, value=vals[name],
+        )
+
+
 def program_zha(s, ieee, groups):
+    sync_time_zha(ieee)  # a wrong valve clock makes a correct schedule switch at the wrong hour
     zha_cmd(ieee, CMD_CLEAR_WEEKLY)
     task.sleep(1)
     for key, days in groups.items():
@@ -538,6 +599,42 @@ def climate_schedule_startup():
     log.info(f"climate_schedule: loaded {len(SCHEDULES)} schedule(s)")
 
 
+def zha_valves(schedule_id=None):
+    ids = [slug(schedule_id)] if schedule_id else list(SCHEDULES)
+    out = {}
+    for sid in ids:
+        s = SCHEDULES.get(sid)
+        if not s or s.get("mode") != "native":
+            continue
+        for c in s["climates"]:
+            kind, target = resolve_target(c)
+            if kind == "zha":
+                out[ent_id(c)] = target
+    return out
+
+
+def sync_time_one(eid, ieee):
+    try:
+        sync_time_zha(ieee)
+        log.info(f"climate_schedule: clock set on {eid}")
+    except Exception as e:
+        log.warning(f"climate_schedule: clock sync failed on {eid}: {type(e).__name__} {e}")
+
+
+def sync_time_all(schedule_id=None):
+    tasks = set()
+    for eid, ieee in zha_valves(schedule_id).items():
+        if not is_unavailable(eid):
+            tasks.add(task.create(sync_time_one, eid, ieee))
+    if tasks:
+        task.wait(tasks)
+
+
+@time_trigger(TIME_SYNC)
+def climate_schedule_time_sync():
+    sync_time_all()
+
+
 @time_trigger(NIGHTLY_RESYNC)
 def climate_schedule_nightly():
     for sid in list(SCHEDULES):
@@ -704,6 +801,21 @@ fields:
     save_store()
     set_all(sid, t)
     task.create(boost_timer, sid, token)
+
+
+@service
+def climate_schedule_sync_time(schedule_id=None):
+    """yaml
+name: Sync valve clocks
+description: Write the current local time, zone and DST rules into the ZHA valves (all schedules if no id).
+fields:
+  schedule_id:
+    description: "Schedule id (empty = all)"
+    example: living_room
+    selector:
+      text:
+"""
+    sync_time_all(schedule_id)
 
 
 @service

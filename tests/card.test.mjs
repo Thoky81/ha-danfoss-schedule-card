@@ -210,6 +210,23 @@ test('valve chips show the set temperature and flag a mismatch with the schedule
   assert.equal(q('.set'), null, 'no setpoint for an unavailable valve');
 });
 
+test('mismatch tooltip spots a valve clock that is hours behind', () => {
+  const w = env();
+  const now = new Date(), c = Math.floor((now.getHours() * 60 + now.getMinutes()) / 30);
+  const two = new Date(Date.now() - 2 * 3600e3), c2 = Math.floor((two.getHours() * 60 + two.getMinutes()) / 30);
+  const day = (now.getDay() + 6) % 7, day2 = (two.getDay() + 6) % 7;
+  const days = Array.from({ length: 7 }, () => '1'.repeat(48).split(''));
+  for (let k = Math.max(0, c - 3); k <= c; k++) days[day][k] = '0'; // Comfort 22° for the last 1.5–2 h, Away 15° before
+  days[day2][c2] = '1';
+  if (c < 4) return; // too close to midnight for this layout
+  const sched = saved({ days: days.map((d) => d.join('')) });
+  const { q } = mount(w, {}, hassWith(sched, { 'climate.a': { state: 'heat', attributes: { friendly_name: 'TRV', current_temperature: 21, temperature: 15 } } }).hass);
+  if (now.getMinutes() % 30 >= 10) {          // outside the 10-minute grace after a block change
+    assert.ok(q('.set').classList.contains('off'));
+    assert.match(q('.set').title, /clock is probably 2 h behind/);
+  }
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }

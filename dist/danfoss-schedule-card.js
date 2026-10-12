@@ -15,7 +15,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.11.0';
+  const VERSION = '1.12.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -354,8 +354,16 @@
           : mode === 'ha' ? 'HA-driven' : last;
         const sp = st && st.state !== 'unavailable' ? parseFloat(st.attributes.temperature) : NaN;
         const off = !isNaN(sp) && want != null && !grace && Math.abs(sp - want) > 0.05;
+        // a setpoint that matches the schedule of 1–3 h ago means the valve clock is behind
+        let lag = 0;
+        if (off && sv && !bo) for (const hh of [1, 2, 3]) {
+          const d = new Date(Date.now() - hh * 3600e3), k = Math.floor((d.getHours() * 60 + d.getMinutes()) / SLOT_MIN);
+          if (Math.abs(+sv.presets[+sv.days[(d.getDay() + 6) % 7][k]].temp - sp) < 0.05) { lag = hh; break; }
+        }
         const set = isNaN(sp) ? '' : `<span class="set${off ? ' off' : ''}" title="${esc(off
-          ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : 'the schedule'} says ${want.toFixed(1)}° (changed by hand on the valve, or the schedule wasn't applied)`
+          ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : 'the schedule'} says ${want.toFixed(1)}°. ${lag
+            ? `That's the schedule of ${lag} h ago: the valve clock is probably ${lag} h behind – press Re-sync to set it.`
+            : 'Changed by hand on the valve, or the schedule wasn\'t applied.'}`
           : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${off ? ' ⚠' : ''}</span>`;
         return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
