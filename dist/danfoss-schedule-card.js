@@ -8,6 +8,7 @@
  * icon: mdi:thermometer               # any mdi: icon, or an emoji
  * temperature_sensor: sensor.living_room_temperature   # optional, room temperature in the header
  * show_graph: true                    # room temperature + target history (needs temperature_sensor)
+ * battery_low: 15                     # %, valve battery shown red below this
  * climates:                           # climate entities (or {entity, ieee} / {entity, z2m})
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
@@ -15,7 +16,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.13.0';
+  const VERSION = '1.13.1';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -43,6 +44,7 @@
   };
   const BOOST_MINUTES = [30, 60, 120, 180, 0]; // 0 = until the next block change
   const GH = 110; // graph plot height, px
+  const BATTERY_LOW = 15; // %, default for battery_low: the valve chip's battery turns red below this
   const G_LO = 5, G_HI = 35; // fixed scale = the Ally's setpoint range, same on every card
   const HIST_REFRESH = 10 * 60e3;
   const durTxt = (m) => (!m ? 'Until next change' : m < 60 ? `${m} min` : `${m / 60} h`);
@@ -402,7 +404,7 @@
           : limited ? `Valve is set to ${sp.toFixed(1)}°. ${bo ? 'The boost' : 'The schedule'} says ${want.toFixed(1)}°, but this valve is limited to ${exp < want ? 'max' : 'min'} ${exp.toFixed(1)}°.`
           : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${limited && !off ? ` (${exp < want ? 'max' : 'min'})` : ''}${off ? ' ⚠' : ''}</span>`;
         const bat = this._battery(id);
-        const batt = bat == null ? '' : `<span class="bat${bat < 20 ? ' low' : ''}" title="Battery ${Math.round(bat)} %"><i><b style="width:${Math.max(4, Math.min(100, bat))}%"></b></i>${Math.round(bat)}%</span>`;
+        const batt = bat == null ? '' : `<span class="bat${bat < (+this._cfg.battery_low || BATTERY_LOW) ? ' low' : ''}" title="Battery ${Math.round(bat)} %"><i><b style="width:${Math.max(4, Math.min(100, bat))}%"></b></i>${Math.round(bat)}%</span>`;
         return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${batt}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
 
@@ -609,6 +611,7 @@
     { name: 'climates', selector: { entity: { multiple: true, filter: { domain: 'climate' } } } },
     { name: 'temperature_sensor', selector: { entity: { filter: { domain: 'sensor', device_class: 'temperature' } } } },
     { name: 'show_graph', selector: { boolean: {} } },
+    { name: 'battery_low', selector: { number: { min: 5, max: 50, step: 1, mode: 'box', unit_of_measurement: '%' } } },
     { name: 'mode', selector: { select: { mode: 'dropdown', options: [
       { value: 'native', label: 'Native – program the valves' },
       { value: 'ha', label: 'HA – Home Assistant sets the temperature' },
@@ -623,6 +626,7 @@
     icon: ['Icon', 'Shown next to the title. Leave empty for mdi:thermometer.'],
     climates: ['Valves', 'All valves on this card get the same schedule.'],
     temperature_sensor: ['Room temperature sensor', 'Optional. Shown in the header next to the target temperature.'],
+    battery_low: ['Battery warning below', 'The valve battery on the card turns red below this level (default 15 %).'],
     show_graph: ['Show temperature history', 'Today (or yesterday) under the schedule: room temperature and the target per half hour. Needs a room temperature sensor.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
@@ -670,7 +674,7 @@
       if (!this._cfg) return;
       if (!this.shadowRoot) this._build();
       this._form.hass = this._hass;
-      this._form.data = { mode: 'native', show_graph: true, ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
+      this._form.data = { mode: 'native', show_graph: true, battery_low: BATTERY_LOW, ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
       this._renderNote();
       this._syncPresets();
     }

@@ -156,7 +156,7 @@ test('editor: shows saved presets, undo, only last unused preset removable', () 
   ed.hass = hassWith(saved({ days: Array(7).fill('2'.repeat(48)) })).hass;
   assert.equal(E.querySelector('.del').disabled, true, 'last preset in use');
   assert.deepEqual(plain(E.querySelector('ha-form').schema.map((x) => x.name)),
-    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'mode', 'oper_mode', 'nightly_resync', 'z2m_base_topic']);
+    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'battery_low', 'mode', 'oper_mode', 'nightly_resync', 'z2m_base_topic']);
 });
 
 test('history graph: one day aligned with the rows, 48 preset-coloured bars, yesterday/today, hover', async () => {
@@ -237,7 +237,7 @@ test('valve chips: battery from the device, limited valve shows (max) without a 
   hass.entities = { 'climate.a': { platform: 'zha', device_id: 'dev1' }, 'sensor.trv_a_battery': { device_id: 'dev1' } };
   const { q } = mount(w, {}, hass);
   assert.match(q('.bat').textContent, /14%/);
-  assert.ok(q('.bat').classList.contains('low'), 'under 20 % is red');
+  assert.ok(q('.bat').classList.contains('low'), 'under 15 % is red');
   assert.ok(!q('.set').classList.contains('off'), 'set 20° on a max-20° valve is not a mismatch');
   assert.match(q('.set').textContent, /set 20\.0° \(max\)/);
   assert.match(q('.set').title, /limited to max 20\.0°/);
@@ -269,6 +269,26 @@ test('boost mismatch tooltip talks about the boost; a Z2M limit below the boost 
   assert.ok(!q('.set').classList.contains('off'));
   assert.match(q('.set').textContent, /set 25\.0° \(max\)/);
   assert.match(q('.set').title, /The boost says 27\.0°, but this valve is limited to max 25\.0°/);
+});
+
+test('battery turns red only below 15 %', () => {
+  const w = env();
+  const chip = (pct) => {
+    const { hass } = hassWith(saved(), { 'sensor.b': { state: String(pct), attributes: { device_class: 'battery' } } });
+    hass.entities = { 'climate.a': { platform: 'zha', device_id: 'd' }, 'sensor.b': { device_id: 'd' } };
+    return mount(w, {}, hass).q('.bat');
+  };
+  assert.ok(!chip(15).classList.contains('low'));
+  assert.ok(!chip(18).classList.contains('low'));
+  assert.ok(chip(14).classList.contains('low'));
+});
+
+test('battery_low option moves the threshold', () => {
+  const w = env();
+  const { hass } = hassWith(saved(), { 'sensor.b': { state: '22', attributes: { device_class: 'battery' } } });
+  hass.entities = { 'climate.a': { platform: 'zha', device_id: 'd' }, 'sensor.b': { device_id: 'd' } };
+  assert.ok(!mount(w, {}, hass).q('.bat').classList.contains('low'));
+  assert.ok(mount(w, { battery_low: 25 }, hass).q('.bat').classList.contains('low'));
 });
 
 let failed = 0;
