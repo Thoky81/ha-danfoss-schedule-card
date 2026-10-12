@@ -145,11 +145,16 @@ def ent_id(c):
     return c["entity"] if isinstance(c, dict) else c
 
 
-def day_blocks(day, presets):
-    """'000022..' (48 chars) -> [(start_minute, temp), ...] merged by temperature."""
+def day_blocks(day, presets, lo=None, hi=None):
+    """'000022..' (48 chars) -> [(start_minute, temp), ...] merged by temperature.
+    lo/hi: the valve's own setpoint limits; blocks that become equal after limiting merge."""
     out = []
     for i in range(SLOTS):
         t = float(presets[int(day[i])]["temp"])
+        if hi is not None:
+            t = min(t, hi)
+        if lo is not None:
+            t = max(t, lo)
         if not out or out[-1][1] != t:
             out.append((i * SLOT_MIN, t))
     return out
@@ -194,11 +199,11 @@ def resolve_target(c):
     return None, "not a ZHA or Zigbee2MQTT device"
 
 
-def day_groups(s):
+def day_groups(s, lo=None, hi=None):
     """identical days -> one command: {json(blocks): [day indexes]}"""
     groups = {}
     for d in range(7):
-        key = json.dumps(day_blocks(s["days"][d], s["presets"]))
+        key = json.dumps(day_blocks(s["days"][d], s["presets"], lo, hi))
         groups.setdefault(key, []).append(d)
     return groups
 
@@ -400,17 +405,20 @@ def push_valve(sid, c):
     if is_unavailable(eid):
         set_status(sid, eid, "error", "valve unavailable, will retry when it is back")
         return False
-    groups = day_groups(s)
+    lo, hi = valve_limits(eid)
+    groups = day_groups(s, lo, hi)
+    top = max([float(p["temp"]) for p in s["presets"]])
+    note = f", limited to {hi:g}°" if hi < top else ""
 
     last_err = ""
     for attempt in range(RETRIES):
         try:
             if kind == "zha":
                 program_zha(s, target, groups)
-                set_status(sid, eid, "ok", f"{len(groups)} day group(s) via ZHA")
+                set_status(sid, eid, "ok", f"{len(groups)} day group(s) via ZHA{note}")
             else:
                 confirmed = program_z2m(s, target, groups, eid)
-                set_status(sid, eid, "ok", f"{len(groups)} day group(s) via Z2M" + ("" if confirmed else ", mode not confirmed"))
+                set_status(sid, eid, "ok", f"{len(groups)} day group(s) via Z2M{note}" + ("" if confirmed else ", mode not confirmed"))
             log.info(f"climate_schedule {sid}: programmed {eid} ({kind} {target})")
             return True
         except Exception as e:
@@ -475,10 +483,49 @@ def next_change(s, now):
     return None
 
 
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def valve_limits(eid):
+    """(min, max) setpoint the valve accepts: the climate entity's min/max_temp (ZHA reads the valve's
+    min/max_heat_setpoint_limit), tightened by Z2M's number entities for the same limits if present."""
+    lo, hi = 5.0, 35.0
+    try:
+        st = state.getattr(eid) or {}
+    except NameError:
+        st = {}
+    if num(st.get("min_temp")) is not None:
+        lo = max(lo, num(st.get("min_temp")))
+    if num(st.get("max_temp")) is not None:
+        hi = min(hi, num(st.get("max_temp")))
+    reg = er.async_get(hass)
+    ent = reg.async_get(eid)
+    if ent is not None and ent.device_id is not None:
+        for e in er.async_entries_for_device(reg, ent.device_id):
+            if not e.entity_id.startswith("number."):
+                continue
+            try:
+                v = num(state.get(e.entity_id))
+            except NameError:
+                v = None
+            if v is None:
+                continue
+            if e.entity_id.endswith("max_heat_setpoint_limit"):
+                hi = min(hi, v)
+            elif e.entity_id.endswith("min_heat_setpoint_limit"):
+                lo = max(lo, v)
+    return lo, hi
+
+
 def set_all(sid, t):
     for c in SCHEDULES[sid]["climates"]:
+        lo, hi = valve_limits(ent_id(c))
         try:
-            service.call("climate", "set_temperature", entity_id=ent_id(c), temperature=t)
+            service.call("climate", "set_temperature", entity_id=ent_id(c), temperature=min(hi, max(lo, t)))
         except Exception as e:
             log.warning(f"climate_schedule {sid}: set_temperature {ent_id(c)} failed: {e}")
 

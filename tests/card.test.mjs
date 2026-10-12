@@ -227,6 +227,50 @@ test('mismatch tooltip spots a valve clock that is hours behind', () => {
   }
 });
 
+test('valve chips: battery from the device, limited valve shows (max) without a warning', () => {
+  const w = env();
+  const flat = saved({ days: Array(7).fill('0'.repeat(48)) }); // Comfort 22° all week
+  const { hass } = hassWith(flat, {
+    'climate.a': { state: 'heat', attributes: { friendly_name: 'TRV', current_temperature: 21, temperature: 20, min_temp: 5, max_temp: 20 } },
+    'sensor.trv_a_battery': { state: '14', attributes: { device_class: 'battery' } },
+  });
+  hass.entities = { 'climate.a': { platform: 'zha', device_id: 'dev1' }, 'sensor.trv_a_battery': { device_id: 'dev1' } };
+  const { q } = mount(w, {}, hass);
+  assert.match(q('.bat').textContent, /14%/);
+  assert.ok(q('.bat').classList.contains('low'), 'under 20 % is red');
+  assert.ok(!q('.set').classList.contains('off'), 'set 20° on a max-20° valve is not a mismatch');
+  assert.match(q('.set').textContent, /set 20\.0° \(max\)/);
+  assert.match(q('.set').title, /limited to max 20\.0°/);
+});
+
+test('Z2M max_heat_setpoint_limit number tightens the limit', () => {
+  const w = env();
+  const flat = saved({ days: Array(7).fill('0'.repeat(48)) });
+  const { hass } = hassWith(flat, {
+    'climate.a': { state: 'heat', attributes: { friendly_name: 'TRV', current_temperature: 21, temperature: 19, min_temp: 5, max_temp: 35 } },
+    'number.trv_a_max_heat_setpoint_limit': { state: '19', attributes: {} },
+  });
+  hass.entities = { 'climate.a': { platform: 'mqtt', device_id: 'dev2' }, 'number.trv_a_max_heat_setpoint_limit': { device_id: 'dev2' } };
+  const { q } = mount(w, {}, hass);
+  assert.ok(!q('.set').classList.contains('off'));
+  assert.match(q('.set').textContent, /\(max\)/);
+});
+
+test('boost mismatch tooltip talks about the boost; a Z2M limit below the boost is not a mismatch', () => {
+  const w = env();
+  const boosted = saved({ days: Array(7).fill('0'.repeat(48)), boost: { temp: 27, until: '2030-01-01T00:00:00', kind: 'timed' } });
+  const v = (sp) => ({ state: 'heat', attributes: { friendly_name: 'TRV', current_temperature: 22, temperature: sp, min_temp: 5, max_temp: 35 } });
+  let { hass } = hassWith(boosted, { 'climate.a': v(21) });
+  let { q } = mount(w, {}, hass);
+  assert.match(q('.set').title, /or the boost wasn't applied/);
+  ({ hass } = hassWith(boosted, { 'climate.a': v(25), 'number.kupelna_max_heat_setpoint_limit': { state: '25', attributes: {} } }));
+  hass.entities = { 'climate.a': { platform: 'mqtt', device_id: 'k' }, 'number.kupelna_max_heat_setpoint_limit': { device_id: 'k' } };
+  ({ q } = mount(w, {}, hass));
+  assert.ok(!q('.set').classList.contains('off'));
+  assert.match(q('.set').textContent, /set 25\.0° \(max\)/);
+  assert.match(q('.set').title, /The boost says 27\.0°, but this valve is limited to max 25\.0°/);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }

@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.11
+ * danfoss-schedule-card  v1.13
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -15,7 +15,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.12.0';
+  const VERSION = '1.13.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -165,6 +165,39 @@
       try { await this._hass.callService('pyscript', 'climate_schedule_boost_cancel', { schedule_id: slug(this._cfg.schedule_id) }); this._toast('Boost cancelled, back to the schedule'); }
       catch (e) { this._toast('Cancel failed: ' + errText(e), true); }
     }
+    /* ---------- valve device helpers ---------- */
+    /* entity ids of the same device (battery sensor, Z2M limit numbers); the map is rebuilt
+       only when HA hands out a new entity registry */
+    _devEntities(eid) {
+      const ents = this._hass?.entities;
+      if (!ents) return [];
+      if (this._devMapFor !== ents) {
+        this._devMap = {};
+        for (const [id, e] of Object.entries(ents)) if (e.device_id) (this._devMap[e.device_id] ||= []).push(id);
+        this._devMapFor = ents;
+      }
+      return this._devMap[ents[eid]?.device_id] || [];
+    }
+    _battery(eid) {
+      for (const id of this._devEntities(eid)) {
+        const st = this._hass.states[id];
+        if (id.startsWith('sensor.') && st?.attributes.device_class === 'battery' && !isNaN(parseFloat(st.state))) return parseFloat(st.state);
+      }
+      return null;
+    }
+    /* the setpoint range the valve accepts: climate min/max_temp, tightened by Z2M's limit numbers */
+    _limits(eid) {
+      const a = this._hass?.states[eid]?.attributes || {};
+      let lo = Math.max(5, parseFloat(a.min_temp) || 5), hi = Math.min(35, parseFloat(a.max_temp) || 35);
+      for (const id of this._devEntities(eid)) {
+        const v = parseFloat(this._hass.states[id]?.state);
+        if (isNaN(v) || !id.startsWith('number.')) continue;
+        if (id.endsWith('max_heat_setpoint_limit')) hi = Math.min(hi, v);
+        else if (id.endsWith('min_heat_setpoint_limit')) lo = Math.max(lo, v);
+      }
+      return { lo, hi };
+    }
+
     /* ---------- room temperature history ---------- */
     _graphOn() { return !!(this._cfg && this._cfg.temperature_sensor && this._cfg.show_graph !== false); }
     _histCheck(old) {
@@ -353,19 +386,24 @@
           : st.state === 'unavailable' ? `Valve unavailable in Home Assistant (no contact). Last programming: ${last}`
           : mode === 'ha' ? 'HA-driven' : last;
         const sp = st && st.state !== 'unavailable' ? parseFloat(st.attributes.temperature) : NaN;
-        const off = !isNaN(sp) && want != null && !grace && Math.abs(sp - want) > 0.05;
+        const lim = this._limits(id), fit = (v) => Math.min(lim.hi, Math.max(lim.lo, v));
+        const exp = want == null ? null : fit(want), limited = exp != null && exp !== want; // the valve can't go there
+        const off = !isNaN(sp) && exp != null && !grace && Math.abs(sp - exp) > 0.05;
         // a setpoint that matches the schedule of 1–3 h ago means the valve clock is behind
         let lag = 0;
         if (off && sv && !bo) for (const hh of [1, 2, 3]) {
           const d = new Date(Date.now() - hh * 3600e3), k = Math.floor((d.getHours() * 60 + d.getMinutes()) / SLOT_MIN);
-          if (Math.abs(+sv.presets[+sv.days[(d.getDay() + 6) % 7][k]].temp - sp) < 0.05) { lag = hh; break; }
+          if (Math.abs(fit(+sv.presets[+sv.days[(d.getDay() + 6) % 7][k]].temp) - sp) < 0.05) { lag = hh; break; }
         }
         const set = isNaN(sp) ? '' : `<span class="set${off ? ' off' : ''}" title="${esc(off
-          ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : 'the schedule'} says ${want.toFixed(1)}°. ${lag
+          ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : 'the schedule'} says ${exp.toFixed(1)}°${limited ? ` (${want.toFixed(1)}°, limited by this valve's ${exp < want ? 'max' : 'min'} setting)` : ''}. ${lag
             ? `That's the schedule of ${lag} h ago: the valve clock is probably ${lag} h behind – press Re-sync to set it.`
-            : 'Changed by hand on the valve, or the schedule wasn\'t applied.'}`
-          : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${off ? ' ⚠' : ''}</span>`;
-        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${via ? `<span class="via">${via}</span>` : ''}</div>`;
+            : `Changed by hand on the valve, or the ${bo ? 'boost' : 'schedule'} wasn't applied.`}`
+          : limited ? `Valve is set to ${sp.toFixed(1)}°. ${bo ? 'The boost' : 'The schedule'} says ${want.toFixed(1)}°, but this valve is limited to ${exp < want ? 'max' : 'min'} ${exp.toFixed(1)}°.`
+          : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${limited && !off ? ` (${exp < want ? 'max' : 'min'})` : ''}${off ? ' ⚠' : ''}</span>`;
+        const bat = this._battery(id);
+        const batt = bat == null ? '' : `<span class="bat${bat < 20 ? ' low' : ''}" title="Battery ${Math.round(bat)} %"><i><b style="width:${Math.max(4, Math.min(100, bat))}%"></b></i>${Math.round(bat)}%</span>`;
+        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${batt}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
 
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
@@ -549,6 +587,11 @@
   .valves{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)}
   .valve{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--bg2);padding:5px 10px;border-radius:9px}
   .valve b{font-weight:600}
+  .bat{display:inline-flex;align-items:center;gap:4px;color:var(--mut);font-size:11px;padding-left:6px;border-left:1px solid var(--ln)}
+  .bat i{position:relative;width:16px;height:8px;border:1px solid currentColor;border-radius:2px;padding:1px;box-sizing:border-box}
+  .bat i::after{content:'';position:absolute;right:-3px;top:2px;width:2px;height:2px;background:currentColor;border-radius:0 1px 1px 0}
+  .bat b{display:block;height:100%;background:currentColor;border-radius:1px}
+  .bat.low{color:#ff453a;font-weight:600}
   .set{color:var(--mut);padding-left:6px;border-left:1px solid var(--ln)}.set.off{color:#e8890c;font-weight:600}
   .via{font-size:9px;font-weight:700;letter-spacing:.3px;padding:1px 4px;border-radius:4px;background:var(--ln);color:var(--mut)}
   .sd{width:8px;height:8px;border-radius:50%;background:var(--mut)}

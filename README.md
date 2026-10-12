@@ -96,6 +96,8 @@ The card is **view-only** by default, so a stray tap (or a swipe on mobile) can'
 - The `n/6` counter on each row is the number of temperature blocks that day. Danfoss stores **at most 6 per day**. If any day is over the limit, the row turns red and Save is disabled.
 - Two adjacent presets with the same temperature count as one block.
 - Each valve chip shows the measured temperature and what the valve is **set** to. If the setpoint differs from the schedule (or a running boost) it turns amber with ⚠ – the valve was changed by hand, or the schedule wasn't applied. No warning in the first 10 minutes after a block change, while the valve reports its new setpoint.
+- Each chip also shows the valve's **battery** (red under 20 %), found automatically through the valve's device.
+- **Valves with their own limits** (e.g. max 20° in one room valve): the backend fits each valve's copy of the schedule and any boost into that valve's min/max (ZHA: the climate entity's min/max temperature; Z2M: also the *Max/Min heat setpoint limit* entities), so the other valves still get the full temperatures. The chip then shows *set 20.0° (max)* instead of a warning.
 - Valve dots: green = programmed, orange blinking = programming in progress, red = programming failed **or** the valve is `unavailable` in HA right now. Hover a dot for the reason.
 
 ### Temperature history
