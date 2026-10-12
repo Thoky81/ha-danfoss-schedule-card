@@ -16,7 +16,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.13.1';
+  const VERSION = '1.13.2';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -404,7 +404,7 @@
           : limited ? `Valve is set to ${sp.toFixed(1)}°. ${bo ? 'The boost' : 'The schedule'} says ${want.toFixed(1)}°, but this valve is limited to ${exp < want ? 'max' : 'min'} ${exp.toFixed(1)}°.`
           : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${limited && !off ? ` (${exp < want ? 'max' : 'min'})` : ''}${off ? ' ⚠' : ''}</span>`;
         const bat = this._battery(id);
-        const batt = bat == null ? '' : `<span class="bat${bat < (+this._cfg.battery_low || BATTERY_LOW) ? ' low' : ''}" title="Battery ${Math.round(bat)} %"><i><b style="width:${Math.max(4, Math.min(100, bat))}%"></b></i>${Math.round(bat)}%</span>`;
+        const batt = bat == null ? '' : `<span class="bat ${bat < (+this._cfg.battery_low || BATTERY_LOW) ? 'low' : 'ok'}" title="Battery ${Math.round(bat)} %"><i><b style="width:${Math.max(4, Math.min(100, bat))}%"></b></i>${Math.round(bat)}%</span>`;
         return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${batt}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
 
@@ -593,7 +593,7 @@
   .bat i{position:relative;width:16px;height:8px;border:1px solid currentColor;border-radius:2px;padding:1px;box-sizing:border-box}
   .bat i::after{content:'';position:absolute;right:-3px;top:2px;width:2px;height:2px;background:currentColor;border-radius:0 1px 1px 0}
   .bat b{display:block;height:100%;background:currentColor;border-radius:1px}
-  .bat.low{color:#ff453a;font-weight:600}
+  .bat.low{color:#ff453a;font-weight:600}.bat.ok i{color:#34c759}
   .set{color:var(--mut);padding-left:6px;border-left:1px solid var(--ln)}.set.off{color:#e8890c;font-weight:600}
   .via{font-size:9px;font-weight:700;letter-spacing:.3px;padding:1px 4px;border-radius:4px;background:var(--ln);color:var(--mut)}
   .sd{width:8px;height:8px;border-radius:50%;background:var(--mut)}

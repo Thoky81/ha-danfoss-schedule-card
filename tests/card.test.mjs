@@ -279,6 +279,7 @@ test('battery turns red only below 15 %', () => {
     return mount(w, {}, hass).q('.bat');
   };
   assert.ok(!chip(15).classList.contains('low'));
+  assert.ok(chip(15).classList.contains('ok'), 'green from the threshold up');
   assert.ok(!chip(18).classList.contains('low'));
   assert.ok(chip(14).classList.contains('low'));
 });
