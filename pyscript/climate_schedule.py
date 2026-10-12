@@ -353,8 +353,9 @@ def push_valve(sid, c):
             log.info(f"climate_schedule {sid}: programmed {eid} ({kind} {target})")
             return True
         except Exception as e:
-            last_err = str(e)
-            log.warning(f"climate_schedule {sid}: {eid} attempt {attempt + 1} failed: {e}")
+            # some errors (timeouts) have no message: always name the type
+            last_err = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            log.warning(f"climate_schedule {sid}: {eid} attempt {attempt + 1} failed: {last_err}")
             task.sleep(RETRY_WAIT)
     set_status(sid, eid, "error", last_err[:200])
     return False
