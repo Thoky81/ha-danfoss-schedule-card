@@ -292,6 +292,15 @@ test('battery_low option moves the threshold', () => {
   assert.ok(mount(w, { battery_low: 25 }, hass).q('.bat').classList.contains('low'));
 });
 
+test('failed valve: next try in tooltip, click the red dot to retry just that valve', async () => {
+  const w = env();
+  const { hass, calls } = hassWith(saved({ status: { 'climate.a': { state: 'error', at: '2026-10-13T08:00:00', msg: 'TimeoutError', next: '2026-10-13T08:15:00' } } }));
+  const { q } = mount(w, {}, hass);
+  assert.match(q('.valve').title, /TimeoutError · next try 08:15\. Click the red dot/);
+  q('.sd.retry').click(); await tick();
+  assert.deepEqual(plain(calls[0]), ['pyscript', 'climate_schedule_push', { schedule_id: 'obyvak', valve: 'climate.a' }]);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }

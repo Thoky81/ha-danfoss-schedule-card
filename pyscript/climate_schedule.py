@@ -51,6 +51,7 @@ MAX_BLOCKS = 6               # Danfoss: 6 transitions per day
 DAY_BITS = [2, 4, 8, 16, 32, 64, 1]  # Mon..Sun -> ZCL SeqDayOfWeek (Sun = bit0)
 RETRIES = 3
 STARTUP_GRACE = 600         # s after start in which "valve came back" is a restart, not a battery change
+RETRY_LATER = [15, 60, 180]  # min: a valve that failed all attempts is tried again later (sleepy valves on weak links)
 RETRY_WAIT = 30              # s between attempts, gives the mesh time to find a route again
 DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 Z2M_DEFAULT_BASE = "zigbee2mqtt"
@@ -241,8 +242,11 @@ def publish(sid):
     state.set(ENTITY_PREFIX + sid, overall, new_attributes=attrs)
 
 
-def set_status(sid, eid, st, msg=""):
-    SCHEDULES[sid].setdefault("status", {})[eid] = {"state": st, "at": now_iso(), "msg": msg}
+def set_status(sid, eid, st, msg="", nxt=None):
+    entry = {"state": st, "at": now_iso(), "msg": msg}
+    if nxt:
+        entry["next"] = nxt  # kept out of msg so alerts don't treat every retry as a new problem
+    SCHEDULES[sid].setdefault("status", {})[eid] = entry
     publish(sid)
 
 
@@ -395,7 +399,21 @@ def program_z2m(s, device, groups, eid):
     return z2m_confirm(s, device, eid, want)
 
 
-def push_valve(sid, c):
+def retry_later(sid, eid, later):
+    task.unique(f"climate_schedule_retry_{sid}_{eid}")
+    task.sleep(RETRY_LATER[later] * 60)
+    st = SCHEDULES.get(sid, {}).get("status", {}).get(eid)
+    if not st or st.get("state") != "error":
+        return  # programmed meanwhile (Re-sync, valve came back, ...)
+    log.info(f"climate_schedule {sid}: retrying {eid} ({later + 1}/{len(RETRY_LATER)})")
+    for c in SCHEDULES[sid]["climates"]:
+        if ent_id(c) == eid:
+            set_status(sid, eid, "pending")
+            push_valve(sid, c, later + 1)
+            save_store()
+
+
+def push_valve(sid, c, later=0):
     s = SCHEDULES[sid]
     eid = ent_id(c)
     kind, target = resolve_target(c)
@@ -426,7 +444,12 @@ def push_valve(sid, c):
             last_err = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
             log.warning(f"climate_schedule {sid}: {eid} attempt {attempt + 1} failed: {last_err}")
             task.sleep(RETRY_WAIT)
-    set_status(sid, eid, "error", last_err[:200])
+    if later < len(RETRY_LATER):
+        nxt = (datetime.now() + timedelta(minutes=RETRY_LATER[later])).isoformat(timespec="seconds")
+        set_status(sid, eid, "error", last_err[:200], nxt)
+        task.create(retry_later, sid, eid, later)
+    else:
+        set_status(sid, eid, "error", last_err[:200])
     return False
 
 
@@ -784,17 +807,26 @@ fields:
 
 
 @service
-def climate_schedule_push(schedule_id=None):
+def climate_schedule_push(schedule_id=None, valve=None):
     """yaml
 name: Re-push climate schedule
-description: Program the valves again (all schedules if no id).
+description: Program the valves again (all schedules if no id; only one valve if given).
 fields:
   schedule_id:
     description: "Schedule id (empty = all)"
     example: living_room
     selector:
       text:
+  valve:
+    description: "Only this climate entity of the schedule"
+    example: climate.danfoss_pracovna_right
+    selector:
+      entity:
+        domain: climate
 """
+    if schedule_id and valve:
+        task.create(push_one, slug(schedule_id), valve)
+        return
     ids = [slug(schedule_id)] if schedule_id else list(SCHEDULES)
     for sid in ids:
         if sid in SCHEDULES:

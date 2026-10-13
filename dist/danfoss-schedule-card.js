@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.13
+ * danfoss-schedule-card  v1.14
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -16,7 +16,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.13.2';
+  const VERSION = '1.14.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -145,6 +145,12 @@
         this._toast(this._cfg.mode === 'ha' ? 'Saved – HA will set temperatures' : 'Saved – programming valves…');
       } catch (e) { this._toast('Save failed: ' + errText(e), true); }
       this._busy = false; this._render();
+    }
+    async _retryValve(eid) {
+      try {
+        await this._hass.callService('pyscript', 'climate_schedule_push', { schedule_id: slug(this._cfg.schedule_id), valve: eid });
+        this._toast(`Programming ${this._hass.states[eid]?.attributes.friendly_name || eid} again…`);
+      } catch (e) { this._toast('Retry failed: ' + errText(e), true); }
     }
     async _resync() {
       try { await this._hass.callService('pyscript', 'climate_schedule_push', { schedule_id: slug(this._cfg.schedule_id) }); this._toast('Re-sync started'); }
@@ -383,10 +389,11 @@
         const name = st?.attributes.friendly_name || id;
         const temp = st?.attributes.current_temperature;
         const cls = mode === 'ha' ? 'ha' : !st || st.state === 'unavailable' ? 'err' : s ? s.state : 'unknown';
-        const last = s ? `${s.state} · ${s.at?.replace('T', ' ') || ''} ${s.msg || ''}`.trim() : 'not programmed yet';
+        const last = s ? `${s.state} · ${s.at?.replace('T', ' ') || ''} ${s.msg || ''}`.trim() + (s.next ? ` · next try ${s.next.slice(11, 16)}` : '') : 'not programmed yet';
+        const retry = mode === 'native' && ent && s?.state === 'error' && st && st.state !== 'unavailable';
         const title = !st ? 'Entity not found in Home Assistant'
           : st.state === 'unavailable' ? `Valve unavailable in Home Assistant (no contact). Last programming: ${last}`
-          : mode === 'ha' ? 'HA-driven' : last;
+          : mode === 'ha' ? 'HA-driven' : last + (retry ? '. Click the red dot to try again now.' : '');
         const sp = st && st.state !== 'unavailable' ? parseFloat(st.attributes.temperature) : NaN;
         const lim = this._limits(id), fit = (v) => Math.min(lim.hi, Math.max(lim.lo, v));
         const exp = want == null ? null : fit(want), limited = exp != null && exp !== want; // the valve can't go there
@@ -405,7 +412,7 @@
           : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${limited && !off ? ` (${exp < want ? 'max' : 'min'})` : ''}${off ? ' ⚠' : ''}</span>`;
         const bat = this._battery(id);
         const batt = bat == null ? '' : `<span class="bat ${bat < (+this._cfg.battery_low || BATTERY_LOW) ? 'low' : 'ok'}" title="Battery ${Math.round(bat)} %"><i><b style="width:${Math.max(4, Math.min(100, bat))}%"></b></i>${Math.round(bat)}%</span>`;
-        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}"></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${batt}${via ? `<span class="via">${via}</span>` : ''}</div>`;
+        return `<div class="valve" title="${esc(title)}"><span class="sd ${cls}${retry ? ' retry' : ''}"${retry ? ` data-retry="${esc(id)}" role="button" tabindex="0"` : ''}></span>${esc(name)}${temp != null ? `<b>${(+temp).toFixed(1)}°</b>` : ''}${set}${batt}${via ? `<span class="via">${via}</span>` : ''}</div>`;
       }).join('');
 
       const savedTxt = !ent ? 'Not saved yet' : dirty ? 'Unsaved changes' : `Saved ${ent.attributes.updated ? ent.attributes.updated.slice(5, 16).replace('T', ' ') : ''}`;
@@ -495,6 +502,7 @@
       root.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => { this._bt = Math.max(5, Math.min(30, this._bt + 0.5 * +b.dataset.b)); this._render(); }));
       root.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { this._bm = +b.dataset.m; this._render(); }));
       if (refocus) root.querySelector(`[data-a="${refocus}"]`)?.focus({ preventScroll: true });
+      root.querySelectorAll('[data-retry]').forEach((d) => d.addEventListener('click', () => this._retryValve(d.dataset.retry)));
       root.querySelectorAll('[data-gy]').forEach((b) => b.addEventListener('click', () => { this._gy = b.dataset.gy === '1'; this._render(); }));
       const gp = root.querySelector('.gplot');
       if (gp) {
@@ -597,6 +605,7 @@
   .set{color:var(--mut);padding-left:6px;border-left:1px solid var(--ln)}.set.off{color:#e8890c;font-weight:600}
   .via{font-size:9px;font-weight:700;letter-spacing:.3px;padding:1px 4px;border-radius:4px;background:var(--ln);color:var(--mut)}
   .sd{width:8px;height:8px;border-radius:50%;background:var(--mut)}
+  .sd.retry{cursor:pointer;box-shadow:0 0 0 3px color-mix(in srgb,#ff453a 25%,transparent)}
   .sd.ok{background:#34c759}.sd.pending{background:#ff9f0a;animation:p 1s infinite alternate}.sd.error,.sd.err{background:#ff453a}.sd.ha{background:#ff9f0a}
   @keyframes p{to{opacity:.3}}
   .tip{position:absolute;z-index:5;padding:4px 8px;border-radius:7px;background:rgba(0,0,0,.85);color:#fff;font-size:12px;pointer-events:none;transform:translate(-50%,-150%);display:none;white-space:nowrap}

@@ -121,7 +121,7 @@ Preset names, temperatures and colors are edited in the **card editor** (dashboa
 New presets are added at the end. Only the last preset can be removed, and only when no block uses it (paint it over first), because removing one would shift the others.
 
 ## How the valves are kept in sync
-- On **Save**: `ClearWeeklySchedule`, then one `SetWeeklySchedule` per group of identical days (e.g. Mon–Fri + Sat–Sun = 2 commands), then `programming_operation_mode = 1`. Each valve is tried up to 3 times, 30 s apart. A red dot shows the Zigbee error (hover it); `NWK_NO_ROUTE` or timeouts mean the valve wasn't reachable: check the mesh, then press **Re-sync**.
+- On **Save**: `ClearWeeklySchedule`, then one `SetWeeklySchedule` per group of identical days (e.g. Mon–Fri + Sat–Sun = 2 commands), then `programming_operation_mode = 1`. Each valve is tried up to 3 times, 30 s apart; if all fail, that valve alone is tried again after 15 min, 1 h and 3 h (the tooltip shows the next try, and clicking the red dot retries it right away). A red dot shows the Zigbee error (hover it); `NWK_NO_ROUTE` or timeouts mean the valve wasn't reachable: check the mesh, then press **Re-sync**.
 - The Ally **loses its schedule after a battery change or OTA**, so the schedule is re-pushed automatically:
   - when a valve comes back from `unavailable` (60 s later, only that valve; ignored in the first 10 min after HA/pyscript starts, since a restart doesn't erase schedules)
   - every night at 03:15, **only if** *Re-program valves every night* (`nightly_resync: true`) is on. Off by default: once the schedule is final nothing needs to touch the valves, and re-writing it adds Zigbee traffic for no gain.
