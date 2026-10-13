@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.15
+ * danfoss-schedule-card  v1.16
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -20,7 +20,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.15.1';
+  const VERSION = '1.16.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -104,11 +104,21 @@
     connectedCallback() {
       this._timer = setInterval(() => { if (!this._hold()) this._render(); }, 60000);
       if (this._ro) this._ro.observe(this._card);
+      /* many cards on a view: only the visible ones (plus a margin) redraw and load history */
+      if (!this._io && typeof IntersectionObserver === 'function') {
+        this._io = new IntersectionObserver((es) => {
+          const v = es[es.length - 1].isIntersecting;
+          if (v === this._vis) return;
+          this._vis = v;
+          if (v) { this._histCheck(null); if (this._dirty && !this._hold()) this._render(); }
+        }, { rootMargin: '300px 0px' });
+      }
+      this._io?.observe(this);
       // back from a sleeping tab: the live updates missed meanwhile are only in the history
       this._onVis = () => { if (document.visibilityState === 'visible' && this._graphOn()) { this._histBusy = 0; this._loadHist(); } };
       document.addEventListener('visibilitychange', this._onVis);
     }
-    disconnectedCallback() { clearInterval(this._timer); this._ro?.disconnect(); document.removeEventListener('visibilitychange', this._onVis); }
+    disconnectedCallback() { clearInterval(this._timer); this._ro?.disconnect(); this._io?.disconnect(); this._vis = undefined; document.removeEventListener('visibilitychange', this._onVis); }
 
     _hold() { return this._painting; }
 
@@ -266,10 +276,15 @@
     _graphOn() { return !!(this._cfg && this._cfg.temperature_sensor && this._cfg.show_graph !== false); }
     _histCheck(old) {
       if (!this._graphOn()) return;
+      if (this._vis === false) { if (this._hist && old) this._liveOnly(old); return; } // no history load off-screen
       const id = this._cfg.temperature_sensor, h = this._hist;
       if (!h || h.id !== id || Date.now() - h.at > HIST_REFRESH) { this._loadHist(); return; }
       const st = this._hass.states[id];
       if (old && st && old.states[id] !== st) { const v = reading(st.state); if (v !== null) h.pts.push({ t: Date.parse(st.last_updated) || Date.now(), v, raw: st.state, live: true }); }
+    }
+    _liveOnly(old) { // keep appending live readings while off-screen, so nothing is missing later
+      const id = this._cfg.temperature_sensor, st = this._hass.states[id];
+      if (st && old.states[id] !== st) { const v = reading(st.state); if (v !== null) this._hist.pts.push({ t: Date.parse(st.last_updated) || Date.now(), v, raw: st.state, live: true }); }
     }
     async _loadHist() {
       if ((this._histBusy && Date.now() - this._histBusy < HIST_TIMEOUT) || !this._hass?.callWS) return;
@@ -400,16 +415,14 @@
       tip.textContent = `${dTxt} ${fmt(c0 * SLOT_MIN)}–${fmt((c1 + 1) * SLOT_MIN)} → ${p.name} ${(+p.temp).toFixed(1)}°`;
       tip.style.left = x - r.left + 'px'; tip.style.top = y - r.top + 'px'; tip.style.display = 'block';
     }
-    _bindGrid() {
-      if (!this._editing) return; // view mode: taps and swipes must not paint (mobile scrolling)
-      const g = this.shadowRoot.querySelector('.grid');
-      g.addEventListener('pointerdown', (e) => { if (!e.target.classList.contains('cell')) return; e.preventDefault(); g.setPointerCapture(e.pointerId); this._painting = true; this._paintAt(e.clientX, e.clientY); });
+    _bindGrid(g) { // once, on the grid section; only paints in edit mode (view mode: taps/swipes scroll on mobile)
+      g.addEventListener('pointerdown', (e) => { if (!this._editing || !e.target.classList.contains('cell')) return; e.preventDefault(); g.setPointerCapture(e.pointerId); this._painting = true; this._paintAt(e.clientX, e.clientY); });
       g.addEventListener('pointermove', (e) => { if (this._painting) this._paintAt(e.clientX, e.clientY); });
       const up = () => {
         if (!this._painting) return;
         this._painting = false; this._anchor = null; this._snap = null;
         this.shadowRoot.querySelector('.tip').style.display = 'none';
-        this._html = null; // cells were recoloured directly while painting
+        this._sh = {}; // cells were recoloured directly while painting
         this._render();
       };
       g.addEventListener('pointerup', up); g.addEventListener('pointercancel', up);
@@ -418,6 +431,8 @@
     /* ---------- render ---------- */
     _render() {
       if (!this.shadowRoot || !this._cfg) return;
+      if (this._vis === false && this._card) { this._dirty = true; return; } // off-screen: catch up when scrolled into view
+      this._dirty = false;
       const data = this._data(), ent = this._entity(), ed = !!this._editing, pc = this._presetsChanged() || this._settingsChanged(), dirty = !!this._draft || pc;
       const invalid = this._invalid(data), cur = this._current(data), np = nowPos();
       const status = ent?.attributes.status || {};
@@ -520,7 +535,8 @@
           <span class="sp"></span>
           ${ent && mode === 'native' && !pc ? '<button class="btn" data-a="resync">Re-sync</button>' : ''}
           ${pc || !ent ? saveBtn : ''}`;
-      const html = `
+      const secs = {
+        head: `
         <div class="head">
           <div class="ic">${icon.includes(':') ? `<ha-icon icon="${esc(icon)}"></ha-icon>` : esc(icon)}</div>
           <div class="ttl"><div class="t">${esc(this._cfg.title)}</div>
@@ -529,75 +545,87 @@
             ${room ? `<div class="room" title="${esc(rs.attributes.friendly_name || this._cfg.temperature_sensor)}"><b>${room}</b><div class="s">Room</div></div>` : ''}
             <div>${nowHtml}</div>
           </div>
-        </div>
-        <div class="presets">${chips}</div>
-        ${ed ? '<div class="hint">Pick a preset, then drag over the grid to paint.</div>' : ''}
-        <div class="ruler"><span></span><div class="ticks">${ticks}</div><span></span></div>
-        <div class="grid${ed ? ' editing' : ''}">${rows}</div>
-        <div class="tools">${tools}
+        </div>`,
+        pre: `<div class="presets">${chips}</div>
+        ${ed ? '<div class="hint">Pick a preset, then drag over the grid to paint.</div>' : ''}`,
+        grid: `<div class="ruler"><span></span><div class="ticks">${ticks}</div><span></span></div>
+        <div class="grid${ed ? ' editing' : ''}">${rows}</div>`,
+        tools: `<div class="tools">${tools}
         </div>${boostPanel}
         ${pc && !ed ? '<div class="note">Presets or settings were changed in the card editor. Press <b>Save &amp; program</b> to apply them.</div>' : ''}
         ${invalid ? `<div class="warn">⚠ ${esc(invalid)}</div>` : ''}
-        ${this._msg ? `<div class="msg ${this._msg.err ? 'err' : ''}">${esc(this._msg.text)}</div>` : ''}
-        ${this._graphHtml(data)}
-        <div class="valves">${valves || '<span class="s">No climates configured</span>'}</div>
-        <div class="tip"></div>`;
+        ${this._msg ? `<div class="msg ${this._msg.err ? 'err' : ''}">${esc(this._msg.text)}</div>` : ''}`,
+        graph: this._graphHtml(data),
+        valves: `<div class="valves">${valves || '<span class="s">No climates configured</span>'}</div>`,
+      };
+      this._rs = { cur, data, homeToday }; // for the click handler
 
       /* <ha-card> is created once: a new ha-card has no height until it has rendered its own
          shadow DOM, and a layout read in that moment makes the browser clamp the page's
          scroll position (the dashboard jumps to the top). Only its contents are replaced. */
       if (!this._card) {
-        this.shadowRoot.innerHTML = `<style>${CSS}</style><ha-card></ha-card>`;
+        this.shadowRoot.innerHTML = `<style>${CSS}</style><ha-card>${SECTIONS.map((k) => `<div class="sec" data-s="${k}"></div>`).join('')}<div class="tip"></div></ha-card>`;
         this._card = this.shadowRoot.querySelector('ha-card');
+        this._secEl = Object.fromEntries(SECTIONS.map((k) => [k, this._card.querySelector(`[data-s="${k}"]`)]));
+        this._sh = {};
+        this._card.addEventListener('click', (e) => this._onClick(e)); // one handler for all buttons
+        this._bindGrid(this._secEl.grid);
+        const gs = this._secEl.graph;
+        gs.addEventListener('pointermove', (e) => {
+          const gp = gs.querySelector('.gplot'), r = gp?.getBoundingClientRect();
+          if (!r || !r.width || e.clientY < r.top || e.clientY > r.bottom) { this._gHover(null); return; }
+          this._gHover(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)));
+        });
+        gs.addEventListener('pointerleave', () => this._gHover(null));
         /* width classes instead of CSS container queries: in WebKit (Safari), replacing the
            content of a container-query element makes a scrolled dashboard jump to the top */
         this._ro = typeof ResizeObserver === 'function' && new ResizeObserver(([e]) => {
           const w = e.contentRect.width, cl = this._card.classList;
           cl.toggle('w300', w >= 300); cl.toggle('w380', w >= 380); cl.toggle('w600', w >= 600);
           const pw = Math.round(w - 2 * 34 - 2 * 6); // graph plot = row minus label/counter columns and gaps
-          if (pw > 0 && pw !== this._pw) { this._pw = pw; if (this._graphOn() && !this._hold()) { this._html = null; this._render(); } }
+          if (pw > 0 && pw !== this._pw) { this._pw = pw; if (this._graphOn() && !this._hold()) this._render(); }
         });
         if (this._ro && this.isConnected) this._ro.observe(this._card);
       }
-      if (html === this._html) return; // most HA updates change nothing visible
-      this._html = html;
+      // only the sections whose HTML changed are replaced (a valve temperature only touches the chips)
       const ae = this.shadowRoot.activeElement, refocus = ae && ae.dataset && ae.dataset.a;
-      this._card.innerHTML = html;
-
-      const root = this.shadowRoot;
-      if (ed) root.querySelectorAll('.chip').forEach((el) => el.addEventListener('click', () => { this._sel = +el.dataset.i; this._render(); }));
-      root.querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', () => {
-        const a = b.dataset.a;
-        if (a === 'wd') this._copy(0, [1, 2, 3, 4]);
-        else if (a === 'we') this._copy(5, [6]);
-        else if (a === 'boost') this._openBoost(cur, data.presets);
-        else if (a === 'bclose') { this._bo = false; this._render(); }
-        else if (a === 'bstart') this._boostStart();
-        else if (a === 'unboost') this._boostCancel();
-        else if (a === 'home') this._homeToday(!homeToday);
-        else if (a === 'edit') { this._bo = false; this._editing = true; this._sel = Math.min(this._sel, data.presets.length - 1); this._render(); }
-        else if (a === 'cancel') { this._draft = null; this._editing = false; this._render(); }
-        else if (a === 'resync') this._resync();
-        else if (a === 'save') this._save();
-      }));
-      root.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => { this._bt = Math.max(5, Math.min(30, this._bt + 0.5 * +b.dataset.b)); this._render(); }));
-      root.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { this._bm = +b.dataset.m; this._render(); }));
-      if (refocus) root.querySelector(`[data-a="${refocus}"]`)?.focus({ preventScroll: true });
-      root.querySelectorAll('[data-retry]').forEach((d) => d.addEventListener('click', () => this._retryValve(d.dataset.retry)));
-      root.querySelectorAll('[data-gy]').forEach((b) => b.addEventListener('click', () => { this._gy = b.dataset.gy === '1'; this._render(); }));
-      const gp = root.querySelector('.gplot');
-      if (gp) {
-        gp.addEventListener('pointermove', (e) => { const r = gp.getBoundingClientRect(); if (r.width) this._gHover(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))); });
-        gp.addEventListener('pointerleave', () => this._gHover(null));
-        if (this._hx != null) this._gHover(this._hx); // keep the crosshair through live updates
+      for (const k of SECTIONS) {
+        if (secs[k] === this._sh[k]) continue;
+        this._sh[k] = secs[k];
+        this._secEl[k].innerHTML = secs[k];
+        if (k === 'graph' && this._hx != null) this._gHover(this._hx); // keep the crosshair through live updates
       }
-      this._bindGrid();
+      if (refocus && !this.shadowRoot.activeElement) this.shadowRoot.querySelector(`[data-a="${refocus}"]`)?.focus({ preventScroll: true });
+    }
+    _onClick(e) {
+      const el = e.target.closest('[data-a],[data-b],[data-m],[data-retry],[data-gy],.chip.pick');
+      if (!el) return;
+      const { cur, data, homeToday } = this._rs, ds = el.dataset;
+      if (ds.retry) return this._retryValve(ds.retry);
+      if (ds.gy) { this._gy = ds.gy === '1'; return this._render(); }
+      if (ds.b) { this._bt = Math.max(5, Math.min(30, this._bt + 0.5 * +ds.b)); return this._render(); }
+      if (ds.m != null && !ds.a) { this._bm = +ds.m; return this._render(); }
+      if (el.classList.contains('chip')) { this._sel = +ds.i; return this._render(); }
+      const a = ds.a;
+      if (a === 'wd') this._copy(0, [1, 2, 3, 4]);
+      else if (a === 'we') this._copy(5, [6]);
+      else if (a === 'boost') this._openBoost(cur, data.presets);
+      else if (a === 'bclose') { this._bo = false; this._render(); }
+      else if (a === 'bstart') this._boostStart();
+      else if (a === 'unboost') this._boostCancel();
+      else if (a === 'home') this._homeToday(!homeToday);
+      else if (a === 'edit') { this._bo = false; this._editing = true; this._sel = Math.min(this._sel, data.presets.length - 1); this._render(); }
+      else if (a === 'cancel') { this._draft = null; this._editing = false; this._render(); }
+      else if (a === 'resync') this._resync();
+      else if (a === 'save') this._save();
     }
   }
 
+  const SECTIONS = ['head', 'pre', 'grid', 'tools', 'graph', 'valves'];
   const CSS = `
   :host{--bg2:var(--secondary-background-color,#2a2a2e);--txt:var(--primary-text-color,#f2f2f4);--mut:var(--secondary-text-color,#8e8e96);--acc:var(--primary-color,#0a84ff);--ln:var(--divider-color,#38383d)}
   ha-card{display:block;padding:16px;position:relative;color:var(--txt);overflow:hidden;background:var(--ha-card-background,var(--card-background-color,#1f1f22));border-radius:var(--ha-card-border-radius,12px)}
+  .sec{display:contents}
   .head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
   .ic{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-size:20px;background:rgba(255,138,61,.16);color:#ff8a3d;flex:none}
   .ic ha-icon{--mdc-icon-size:24px}

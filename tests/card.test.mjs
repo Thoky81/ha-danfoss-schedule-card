@@ -416,6 +416,28 @@ test('presence pending: badge says when home mode starts / ends', () => {
   assert.match(q('.badge.home').title, /back to the schedule/);
 });
 
+test('a valve temperature update only replaces the valve chips', () => {
+  const w = env(); const { hass } = hassWith(saved());
+  const { c, q } = mount(w, {}, hass);
+  const head = q('.head'), grid = q('.grid'), chips = q('.valves');
+  c.hass = { ...hass, states: { ...hass.states, 'climate.a': { state: 'heat', attributes: { friendly_name: 'TRV A', current_temperature: 22.7 } } } };
+  assert.equal(q('.head'), head, 'header untouched');
+  assert.equal(q('.grid'), grid, 'grid untouched');
+  assert.notEqual(q('.valves'), chips, 'chips redrawn');
+  assert.match(q('.valves').textContent, /22\.7°/);
+});
+
+test('off-screen card defers redraws until it becomes visible', () => {
+  const w = env(); const { hass } = hassWith(saved());
+  const { c, q } = mount(w, {}, hass);
+  c._vis = false;
+  c.hass = { ...hass, states: { ...hass.states, 'climate.a': { state: 'heat', attributes: { friendly_name: 'TRV A', current_temperature: 25.5 } } } };
+  assert.doesNotMatch(q('.valves').textContent, /25\.5°/, 'not drawn while off-screen');
+  assert.ok(c._dirty);
+  c._vis = true; c._render();
+  assert.match(q('.valves').textContent, /25\.5°/, 'caught up when visible');
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }
