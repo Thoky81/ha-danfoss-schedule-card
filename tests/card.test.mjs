@@ -156,7 +156,7 @@ test('editor: shows saved presets, undo, only last unused preset removable', () 
   ed.hass = hassWith(saved({ days: Array(7).fill('2'.repeat(48)) })).hass;
   assert.equal(E.querySelector('.del').disabled, true, 'last preset in use');
   assert.deepEqual(plain(E.querySelector('ha-form').schema.map((x) => x.name)),
-    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'battery_low', 'mode', 'oper_mode', 'presence_persons', 'presence_replace', 'presence_preset', 'nightly_resync', 'z2m_base_topic']);
+    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'battery_low', 'mode', 'oper_mode', 'presence_persons', 'presence_replace', 'presence_preset', 'presence_delay', 'nightly_resync', 'z2m_base_topic']);
 });
 
 test('history graph: one day aligned with the rows, 48 preset-coloured bars, yesterday/today, hover', async () => {
@@ -357,11 +357,11 @@ test('presence: settings sync to the backend once, with Away -> Comfort defaults
   await tick();
   const sync = calls.filter((x) => x[1] === 'climate_schedule_settings');
   assert.equal(sync.length, 1);
-  assert.deepEqual(plain(sync[0][2]), { schedule_id: 'obyvak', presence_persons: ['person.tomas', 'person.zuzana'], presence_replace: ['Away'], presence_preset: 'Comfort' });
+  assert.deepEqual(plain(sync[0][2]), { schedule_id: 'obyvak', presence_persons: ['person.tomas', 'person.zuzana'], presence_replace: ['Away'], presence_preset: 'Comfort', presence_delay: 30 });
   c.hass = { ...hass }; await tick();
   assert.equal(calls.filter((x) => x[1] === 'climate_schedule_settings').length, 1, 'not sent again');
   // backend has it now -> nothing to send
-  const { hass: h2, calls: c2 } = hassWith(saved({ presets: P2, presence: { persons: ['person.zuzana', 'person.tomas'], replace: ['Away'], preset: 'Comfort' } }));
+  const { hass: h2, calls: c2 } = hassWith(saved({ presets: P2, presence: { persons: ['person.zuzana', 'person.tomas'], replace: ['Away'], preset: 'Comfort', delay: 30 } }));
   mount(w, { presence_persons: ['person.tomas', 'person.zuzana'] }, h2); await tick();
   assert.equal(c2.length, 0);
 });
@@ -401,6 +401,19 @@ test('editor: presence selects list this room\'s presets', () => {
   assert.deepEqual(opt('presence_preset'), ['Comfort', 'Away', 'Warm']);
   assert.deepEqual(plain(f.data.presence_replace), ['Away']);
   assert.equal(f.data.presence_preset, 'Comfort');
+});
+
+test('presence pending: badge says when home mode starts / ends', () => {
+  const w = env();
+  const since = new Date(Date.now() - 10 * 60e3), sinceIso = new Date(since.getTime() - since.getTimezoneOffset() * 60e3).toISOString().slice(0, 19);
+  const at = new Date(since.getTime() + 30 * 60e3), hhmm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  const pend = (extra) => saved({ presence_state: { delay: 30, since: sinceIso, who: ['person.tomas'], ...extra } });
+  const people = { 'person.tomas': { state: 'home', attributes: { friendly_name: 'Tomas' } } };
+  let { q } = mount(w, {}, hassWith(pend({ active: false, home: false, pending: true }), people).hass);
+  assert.match(q('.badge.home.soon').textContent, new RegExp(`from ${hhmm}`));
+  ({ q } = mount(w, {}, hassWith(pend({ active: true, temp: 22, preset: 'Comfort', home: true, pending: false, who: [] }), people).hass));
+  assert.match(q('.badge.home').textContent, new RegExp(`until ${hhmm}`));
+  assert.match(q('.badge.home').title, /back to the schedule/);
 });
 
 let failed = 0;

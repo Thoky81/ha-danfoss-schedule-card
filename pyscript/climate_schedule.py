@@ -18,7 +18,9 @@ Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
   without daylight saving time and switch blocks hours late. Before every
   programming and once a day the backend writes the valve's Time cluster the
   way Zigbee2MQTT does (UTC time, zone offset, DST start/end/shift).
-- presence: while one of the chosen persons is home (or "Home today" is on),
+- presence: while one of the chosen persons is home (after a delay, default
+  30 min both ways, so short flips of the tracking don't move the valves;
+  or immediately with "Home today"),
   blocks of the chosen presets (e.g. Away) are raised to another preset
   (e.g. Comfort) - only ever raised, a boost has priority.
 - boost: all valves of a schedule get a temporary setpoint for N minutes
@@ -587,17 +589,32 @@ def presence_eval(sid, force=False):
     now = datetime.now()
     who = [p for p in (cfg.get("persons") or []) if person_home(p)]
     manual = s.get("home_today") == now.date().isoformat()
+    # debounce: "someone home" only counts after it held for `delay` minutes (both directions)
+    delay = int(cfg.get("delay", 30) or 0)
+    raw = bool(who)
+    db = s.get("presence_debounce") or {}
+    if "home" not in db or delay <= 0:
+        db = {"home": raw}  # first look after start / no delay: take it as it is
+    elif raw == db["home"]:
+        db = {"home": raw}  # flipped back within the window: nothing happened
+    elif db.get("pending") != raw:
+        db = {"home": db["home"], "pending": raw, "since": now.isoformat(timespec="seconds")}
+        task.create(presence_wait, sid, delay)
+    elif (now - datetime.fromisoformat(db["since"])).total_seconds() >= delay * 60:
+        db = {"home": raw}
+    s["presence_debounce"] = db
     cur = preset_now(s, now)
     target = None
     for p in s["presets"]:
         if p.get("name") == cfg.get("preset"):
             target = p
     sched_t = float(cur["temp"])
-    active = bool((who or manual) and target is not None and cur.get("name") in (cfg.get("replace") or [])
+    active = bool((db["home"] or manual) and target is not None and cur.get("name") in (cfg.get("replace") or [])
                   and float(target["temp"]) > sched_t)  # only ever raises
     prev = s.get("presence_state") or {}
     s["presence_state"] = {"active": active, "temp": float(target["temp"]) if active else None,
-                           "preset": target.get("name") if target else None, "who": who, "manual": manual, "sched": sched_t}
+                           "preset": target.get("name") if target else None, "who": who, "manual": manual, "sched": sched_t,
+                           "home": db["home"], "pending": db.get("pending"), "since": db.get("since"), "delay": delay}
     publish(sid)
     if s.get("boost"):
         return  # the boost owns the setpoint; end_boost restores to base_temp
@@ -612,6 +629,12 @@ def presence_eval(sid, force=False):
     elif prev.get("active") and prev.get("temp") != sched_t:  # the block may already be at that temperature
         log.info(f"climate_schedule {sid}: presence over -> schedule {sched_t:g}°")
         set_all(sid, sched_t)
+
+
+def presence_wait(sid, delay):
+    task.unique(f"climate_schedule_presence_wait_{sid}")  # a newer change restarts the window
+    task.sleep(delay * 60 + 5)
+    presence_eval(sid)
 
 
 def presence_eval_all():
@@ -972,7 +995,8 @@ fields:
 
 
 @service
-def climate_schedule_settings(schedule_id=None, presence_persons=None, presence_replace=None, presence_preset=None):
+def climate_schedule_settings(schedule_id=None, presence_persons=None, presence_replace=None, presence_preset=None,
+                              presence_delay=30):
     """yaml
 name: Climate schedule settings
 description: Presence settings of a schedule (set by the card; does not re-program the valves).
@@ -997,6 +1021,13 @@ fields:
     description: "Preset name to raise them to, e.g. Comfort"
     selector:
       text:
+  presence_delay:
+    description: "Minutes a change of who is home must last before it counts (both ways)"
+    example: 30
+    selector:
+      number:
+        min: 0
+        max: 120
 """
     sid = slug(schedule_id)
     s = SCHEDULES.get(sid)
@@ -1008,7 +1039,11 @@ fields:
     replace = presence_replace or []
     if isinstance(replace, str):
         replace = [replace]
-    s["presence"] = {"persons": list(persons), "replace": list(replace), "preset": presence_preset or None}
+    old_persons = (s.get("presence") or {}).get("persons") or []
+    s["presence"] = {"persons": list(persons), "replace": list(replace), "preset": presence_preset or None,
+                     "delay": max(0, int(float(presence_delay if presence_delay is not None else 30)))}
+    if sorted(old_persons) != sorted(persons):
+        s.pop("presence_debounce", None)  # other people: start from what they are now
     save_store()
     setup_triggers()
     presence_eval(sid)

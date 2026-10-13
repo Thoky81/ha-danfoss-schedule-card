@@ -12,6 +12,7 @@
  * presence_persons: [person.a, person.b]  # home mode while at least one of them is home
  * presence_replace: [Away]            # presets raised in home mode
  * presence_preset: Comfort            # …to this preset
+ * presence_delay: 30                  # min a change of who is home must last (both ways)
  * climates:                           # climate entities (or {entity, ieee} / {entity, z2m})
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
@@ -19,7 +20,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.15.0';
+  const VERSION = '1.15.1';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -55,8 +56,8 @@
      reading): dropped, so the line continues instead of spiking. unavailable/unknown stay gaps. */
   const reading = (state) => { const v = parseFloat(state); return isNaN(v) ? NaN : v < -30 || v > 60 ? null : v; };
   const durTxt = (m) => (!m ? 'Until next change' : m < 60 ? `${m} min` : `${m / 60} h`);
-  const untilTxt = (iso) => {
-    const d = new Date(iso), t = fmt(d.getHours() * 60 + d.getMinutes());
+  const untilTxt = (iso) => { // backend times are local wall-clock strings (no zone); also takes a Date
+    const d = iso instanceof Date ? iso : new Date(iso), t = fmt(d.getHours() * 60 + d.getMinutes());
     return d.toDateString() === new Date().toDateString() ? t : `${DAYS[(d.getDay() + 6) % 7]} ${t}`;
   };
   const presenceCfg = (cfg, presets) => {
@@ -65,9 +66,10 @@
       persons: cfg.presence_persons || [],
       replace: cfg.presence_replace || (names.includes('Away') ? ['Away'] : []),
       preset: cfg.presence_preset || (names.includes('Comfort') ? 'Comfort' : null),
+      delay: cfg.presence_delay != null && cfg.presence_delay !== '' ? +cfg.presence_delay : 30,
     };
   };
-  const normPresence = (x) => JSON.stringify({ persons: [...(x.persons || [])].sort(), replace: [...(x.replace || [])].sort(), preset: x.preset || null });
+  const normPresence = (x) => JSON.stringify({ persons: [...(x.persons || [])].sort(), replace: [...(x.replace || [])].sort(), preset: x.preset || null, delay: x.delay ?? 30 });
   const normP = (ps) => JSON.stringify((ps || []).map((p) => ({ name: String(p.name), temp: +p.temp, color: String(p.color) })));
   const fitDays = (days, n) => days.map((d) => d.replace(/./g, (ch) => (+ch < n ? ch : '0')));
   const nowPos = () => { const d = new Date(); return { day: (d.getDay() + 6) % 7, min: d.getHours() * 60 + d.getMinutes() }; };
@@ -204,7 +206,21 @@
       this._sentPresence = key;
       this._hass.callService('pyscript', 'climate_schedule_settings', {
         schedule_id: slug(this._cfg.schedule_id), presence_persons: want.persons, presence_replace: want.replace, presence_preset: want.preset,
+        presence_delay: want.delay,
       }).catch(() => { this._sentPresence = null; });
+    }
+    _presenceBadge(pst) {
+      if (!pst) return '';
+      const names = (pst.who || []).map((p) => this._hass?.states[p]?.attributes.friendly_name || p).join(', ');
+      const at = pst.since ? untilTxt(new Date(Date.parse(pst.since) + (pst.delay || 0) * 60e3)) : '';
+      const home = pst.home ?? !!pst.who?.length; // older backends had no "home"
+      if (pst.active) {
+        const title = pst.pending === false && !pst.manual ? `Nobody home since ${untilTxt(pst.since)} – back to the schedule at ${at} unless someone comes back`
+          : home && names ? `Home: ${names}` : 'Home today (manual, until midnight)';
+        return `<span class="badge home" title="${esc(title)}">🏠 Home${!home && pst.manual ? ' today' : ''}${pst.pending === false && !pst.manual ? ` · until ${at}` : ''}</span>`;
+      }
+      if (pst.pending === true) return `<span class="badge home soon" title="${esc(`${names} home – home mode starts at ${at} if it stays so`)}">🏠 from ${at}</span>`;
+      return '';
     }
     async _homeToday(on) {
       try {
@@ -508,8 +524,7 @@
         <div class="head">
           <div class="ic">${icon.includes(':') ? `<ha-icon icon="${esc(icon)}"></ha-icon>` : esc(icon)}</div>
           <div class="ttl"><div class="t">${esc(this._cfg.title)}</div>
-            <div class="s"><span class="badge ${mode}">${mode === 'ha' ? 'HA-driven' : 'On-valve schedule'}</span>${pst?.active ? `<span class="badge home" title="${esc(pst.who?.length
-              ? 'Home: ' + pst.who.map((p) => this._hass?.states[p]?.attributes.friendly_name || p).join(', ') : 'Home today (manual)')}">🏠 Home${pst.who?.length ? '' : ' today'}</span>` : ''} ${savedTxt}</div></div>
+            <div class="s"><span class="badge ${mode}">${mode === 'ha' ? 'HA-driven' : 'On-valve schedule'}</span>${this._presenceBadge(pst)} ${savedTxt}</div></div>
           <div class="nowt">
             ${room ? `<div class="room" title="${esc(rs.attributes.friendly_name || this._cfg.temperature_sensor)}"><b>${room}</b><div class="s">Room</div></div>` : ''}
             <div>${nowHtml}</div>
@@ -600,7 +615,7 @@
   .hint{color:var(--mut);font-size:12px;margin:-4px 0 8px}
   .btn.hot{border-color:#ff453a;color:#ff453a}
   .btn.on{border-color:#34c759;color:#34c759;font-weight:600}
-  .badge.home{background:rgba(52,199,89,.18);color:#34c759}
+  .badge.home{background:rgba(52,199,89,.18);color:#34c759}.badge.home.soon{background:transparent;border:1px dashed #34c759}
   .boost{margin-top:10px;padding:10px 12px;border-radius:12px;background:var(--bg2);display:flex;flex-direction:column;gap:8px}
   .brow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.brow.end{justify-content:flex-end}
   .bl{color:var(--mut);font-size:13px;min-width:62px}
@@ -697,6 +712,7 @@
     { name: 'presence_persons', selector: { entity: { multiple: true, filter: { domain: 'person' } } } },
     { name: 'presence_replace', selector: { select: { multiple: true, mode: 'list', options: [] } } },
     { name: 'presence_preset', selector: { select: { mode: 'dropdown', options: [] } } },
+    { name: 'presence_delay', selector: { number: { min: 0, max: 120, step: 5, mode: 'box', unit_of_measurement: 'min' } } },
     { name: 'nightly_resync', selector: { boolean: {} } },
     { name: 'z2m_base_topic', selector: { text: {} } },
   ];
@@ -710,6 +726,7 @@
     presence_persons: ['Presence: people', 'Home mode while at least one of them is home (the "Home today" button on the card does the same until midnight).'],
     presence_replace: ['Presence: raise these presets', 'Blocks with these presets are raised while someone is home.'],
     presence_preset: ['Presence: raise to', 'Preset used instead. Never lowers a room.'],
+    presence_delay: ['Presence: delay', 'A change of who is home must last this long before the valves follow, both ways (default 30 min). Home today is immediate.'],
     show_graph: ['Show temperature history', 'Today (or yesterday) under the schedule: room temperature and the target per half hour. Needs a room temperature sensor.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
@@ -762,7 +779,7 @@
       this._form.hass = this._hass;
       const names = this._presets().map((p) => p.name), pc = presenceCfg(this._cfg, this._presets());
       if (JSON.stringify(names) !== this._schemaNames) { this._schemaNames = JSON.stringify(names); this._form.schema = editorSchema(names); }
-      this._form.data = { mode: 'native', show_graph: true, battery_low: BATTERY_LOW, presence_replace: pc.replace, presence_preset: pc.preset || undefined, ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
+      this._form.data = { mode: 'native', show_graph: true, battery_low: BATTERY_LOW, presence_replace: pc.replace, presence_preset: pc.preset || undefined, presence_delay: pc.delay, ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
       this._renderNote();
       this._syncPresets();
     }
