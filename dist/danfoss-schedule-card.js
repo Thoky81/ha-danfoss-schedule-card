@@ -16,7 +16,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.14.2';
+  const VERSION = '1.14.3';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -262,13 +262,16 @@
       if (!h || h.id !== this._cfg.temperature_sensor || h.err)
         return frame('<span></span>', `<div class="gempty">${h?.err ? 'History not available' : 'Loading history…'}</div>`);
 
-      const X = (t) => ((t - start) / (end - start)) * 1000;
+      /* drawn in real pixels, nothing stretched: Safari loses pieces of stretched SVG lines that
+         use vector-effect:non-scaling-stroke when it repaints parts of the screen */
+      const W = this._pw || 1000;
+      const X = (t) => ((t - start) / (end - start)) * W;
       const Y = (v) => GH - ((Math.min(G_HI, Math.max(G_LO, v)) - G_LO) / (G_HI - G_LO)) * GH;
       // target: one bar per half-hour cell of this day's row; the rest of today is faded (planned)
       let bars = '';
       for (let c = 0; c < SLOTS; c++) {
         const p = data.presets[+data.days[day][c]], a = start + c * 1800e3;
-        const x0 = (c / SLOTS) * 1000 + 1.2, x1 = ((c + 1) / SLOTS) * 1000 - 1.2;
+        const gap = Math.min(1, W / SLOTS / 8), x0 = (c / SLOTS) * W + gap, x1 = ((c + 1) / SLOTS) * W - gap;
         bars += `<rect x="${x0.toFixed(1)}" y="${Y(+p.temp).toFixed(1)}" width="${(x1 - x0).toFixed(1)}" height="${(GH - Y(+p.temp)).toFixed(1)}" style="fill:${p.color}" class="${a > now ? 'eq fut' : 'eq'}"/>`;
       }
       // room readings of this day, the last one before it carried to midnight
@@ -283,13 +286,13 @@
       const today = !this._gy;
       return frame(`<div class="gy">${ys.map((y) => `<span style="top:${(Y(y) / GH) * 100}%">${y}°</span>`).join('')}</div>`, `
           <div class="gplot">
-            <svg viewBox="0 0 1000 ${GH}" preserveAspectRatio="none">
-              ${ys.map((y) => `<line class="gl" x1="0" x2="1000" y1="${Y(y)}" y2="${Y(y)}"/>`).join('')}
+            <svg viewBox="0 0 ${W} ${GH}" ${this._pw ? '' : 'preserveAspectRatio="none" '}width="100%" height="${GH}">
+              ${ys.map((y) => `<line class="gl" x1="0" x2="${W}" y1="${Y(y).toFixed(1)}" y2="${Y(y).toFixed(1)}"/>`).join('')}
               ${bars}
               ${d ? `<path class="rl" d="${d}"/>` : ''}
             </svg>
-            ${today ? `<span class="gnow" style="left:${X(now) / 10}%"></span>` : ''}
-            ${lastV != null && today ? `<span class="gdot" style="left:${X(now) / 10}%;top:${(Y(lastV) / GH) * 100}%"></span>` : ''}
+            ${today ? `<span class="gnow" style="left:${(X(now) / W) * 100}%"></span>` : ''}
+            ${lastV != null && today ? `<span class="gdot" style="left:${(X(now) / W) * 100}%;top:${(Y(lastV) / GH) * 100}%"></span>` : ''}
             <span class="gcross"></span><span class="gdot hd"></span><div class="gtip"></div>
             <div class="gx ticks">${Array.from({ length: 25 }, (_, hr) => `<span class="hr${hr % 2 ? '' : ' m2'}${hr % 3 ? '' : ' m3'}${hr % 6 ? '' : ' m6'}" style="left:${(hr / 24) * 100}%">${hr}</span>`).join('')}</div>
           </div>`);
@@ -490,6 +493,8 @@
         this._ro = typeof ResizeObserver === 'function' && new ResizeObserver(([e]) => {
           const w = e.contentRect.width, cl = this._card.classList;
           cl.toggle('w300', w >= 300); cl.toggle('w380', w >= 380); cl.toggle('w600', w >= 600);
+          const pw = Math.round(w - 2 * 34 - 2 * 6); // graph plot = row minus label/counter columns and gaps
+          if (pw > 0 && pw !== this._pw) { this._pw = pw; if (this._graphOn() && !this._hold()) { this._html = null; this._render(); } }
         });
         if (this._ro && this.isConnected) this._ro.observe(this._card);
       }
@@ -596,10 +601,10 @@
   .gy{position:relative;height:${GH}px;font-size:10px;color:var(--mut)}.gy span{position:absolute;right:0;transform:translateY(-50%)}
   .gplot{position:relative;height:${GH}px;margin-bottom:18px;touch-action:pan-y}
   .gplot svg{width:100%;height:${GH}px;display:block;overflow:visible}
-  .gl{stroke:var(--ln);stroke-width:1;vector-effect:non-scaling-stroke}
+  .gl{stroke:var(--ln);stroke-width:1}
   .eq{opacity:.45}.eq.fut{opacity:.18}
   .gnow{position:absolute;top:0;bottom:0;width:2px;background:var(--txt);opacity:.5;transform:translateX(-1px);pointer-events:none}
-  .rl{fill:none;stroke:var(--txt);stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+  .rl{fill:none;stroke:var(--txt);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
   .gdot{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--txt);transform:translate(-50%,-50%);box-shadow:0 0 0 2px var(--card-background-color,#fff);pointer-events:none}
   .gdot.hd,.gcross,.gtip{display:none}
   .gplot.hov .gdot.hd,.gplot.hov .gcross{display:block}.gplot.hov .gtip{display:block}
