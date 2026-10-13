@@ -18,6 +18,9 @@ Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
   without daylight saving time and switch blocks hours late. Before every
   programming and once a day the backend writes the valve's Time cluster the
   way Zigbee2MQTT does (UTC time, zone offset, DST start/end/shift).
+- presence: while one of the chosen persons is home (or "Home today" is on),
+  blocks of the chosen presets (e.g. Away) are raised to another preset
+  (e.g. Comfort) - only ever raised, a boost has priority.
 - boost: all valves of a schedule get a temporary setpoint for N minutes
   (or until the next block change), then go back to the schedule.
 
@@ -64,6 +67,7 @@ SCHEDULES = {}
 STARTED_AT = None
 AVAIL_TRIGGERS = {}
 LOG_TRIGGERS = {}
+PERSON_TRIGGERS = {}
 Z2M_ERRORS = {}              # ieee / friendly name -> last failure Z2M reported on <base>/bridge/logging
 HA_LAST = {}
 
@@ -238,6 +242,9 @@ def publish(sid):
         "status": status,
         "updated": s.get("updated"),
         "boost": s.get("boost"),
+        "presence": s.get("presence") or {},
+        "presence_state": s.get("presence_state") or {},
+        "home_today": s.get("home_today") == datetime.now().date().isoformat(),
     }))
     state.set(ENTITY_PREFIX + sid, overall, new_attributes=attrs)
 
@@ -553,11 +560,86 @@ def set_all(sid, t):
             log.warning(f"climate_schedule {sid}: set_temperature {ent_id(c)} failed: {e}")
 
 
+def base_temp(s, now):
+    """what the room should be at without a boost: presence override, else the schedule"""
+    ps = s.get("presence_state") or {}
+    return float(ps["temp"]) if ps.get("active") else current_temp(s, now)
+
+
+def preset_now(s, now):
+    slot = (now.hour * 60 + now.minute) // SLOT_MIN
+    return s["presets"][int(s["days"][now.weekday()][slot])]
+
+
+def person_home(p):
+    try:
+        return state.get(p) == "home"
+    except NameError:
+        return False
+
+
+def presence_eval(sid, force=False):
+    """decide whether presence raises the current block, and apply a change to the valves"""
+    s = SCHEDULES.get(sid)
+    if not s:
+        return
+    cfg = s.get("presence") or {}
+    now = datetime.now()
+    who = [p for p in (cfg.get("persons") or []) if person_home(p)]
+    manual = s.get("home_today") == now.date().isoformat()
+    cur = preset_now(s, now)
+    target = None
+    for p in s["presets"]:
+        if p.get("name") == cfg.get("preset"):
+            target = p
+    sched_t = float(cur["temp"])
+    active = bool((who or manual) and target is not None and cur.get("name") in (cfg.get("replace") or [])
+                  and float(target["temp"]) > sched_t)  # only ever raises
+    prev = s.get("presence_state") or {}
+    s["presence_state"] = {"active": active, "temp": float(target["temp"]) if active else None,
+                           "preset": target.get("name") if target else None, "who": who, "manual": manual, "sched": sched_t}
+    publish(sid)
+    if s.get("boost"):
+        return  # the boost owns the setpoint; end_boost restores to base_temp
+    changed = active != bool(prev.get("active")) or (active and (s["presence_state"]["temp"] != prev.get("temp") or sched_t != prev.get("sched")))
+    if not (changed or force):
+        return
+    if s.get("mode") == "ha":
+        apply_ha(sid, force=True)
+    elif active:
+        log.info(f"climate_schedule {sid}: presence ({', '.join(who) or 'home today'}) -> {target.get('name')} {float(target['temp']):g}°")
+        set_all(sid, float(target["temp"]))  # re-applied after the valve's own block change too (sched changed)
+    elif prev.get("active") and prev.get("temp") != sched_t:  # the block may already be at that temperature
+        log.info(f"climate_schedule {sid}: presence over -> schedule {sched_t:g}°")
+        set_all(sid, sched_t)
+
+
+def presence_eval_all():
+    for sid in list(SCHEDULES):
+        if (SCHEDULES[sid].get("presence") or {}).get("persons") or SCHEDULES[sid].get("home_today") or (SCHEDULES[sid].get("presence_state") or {}).get("active"):
+            presence_eval(sid)
+
+
+@time_trigger("cron(1,31 * * * *)")
+def climate_schedule_presence_tick():
+    # 1 minute after each block boundary (the valve switched by itself); 00:01 also ends "Home today"
+    presence_eval_all()
+
+
+def make_person_trigger(person):
+    @state_trigger(f"{person}")
+    def _person_changed(**kwargs):
+        for sid in list(SCHEDULES):
+            if person in ((SCHEDULES[sid].get("presence") or {}).get("persons") or []):
+                presence_eval(sid)
+    return _person_changed
+
+
 def apply_ha(sid, force=False):
     s = SCHEDULES[sid]
     if s.get("boost"):
         return  # the boost owns the setpoint until it ends
-    t = current_temp(s, datetime.now())
+    t = base_temp(s, datetime.now())
     if not force and HA_LAST.get(sid) == t:
         return
     HA_LAST[sid] = t
@@ -577,7 +659,7 @@ def end_boost(sid, restore):
     if s.get("mode") == "ha":
         apply_ha(sid, force=True)
     else:
-        set_all(sid, current_temp(s, datetime.now()))  # the on-valve schedule takes over again at the next block
+        set_all(sid, base_temp(s, datetime.now()))  # back to the schedule (or presence); the valve follows its schedule at the next block
 
 
 def boost_timer(sid, token):
@@ -636,9 +718,14 @@ def make_avail_trigger(sid, eid):
 
 
 def setup_triggers():
-    global AVAIL_TRIGGERS, LOG_TRIGGERS
+    global AVAIL_TRIGGERS, LOG_TRIGGERS, PERSON_TRIGGERS
     trig = {}
     logs = {}
+    persons = {}
+    for sid, s in SCHEDULES.items():
+        for p in (s.get("presence") or {}).get("persons") or []:
+            persons[p] = PERSON_TRIGGERS.get(p) or make_person_trigger(p)
+    PERSON_TRIGGERS = persons
     for sid, s in SCHEDULES.items():
         if s.get("mode") == "native":
             for c in s["climates"]:
@@ -666,6 +753,7 @@ def climate_schedule_startup():
         if SCHEDULES[sid].get("boost"):
             task.create(boost_timer, sid, SCHEDULES[sid]["boost"]["token"])  # resumes, or ends an expired boost
     setup_triggers()
+    presence_eval_all()
     log.info(f"climate_schedule: loaded {len(SCHEDULES)} schedule(s)")
 
 
@@ -795,8 +883,9 @@ fields:
         "status": {},
         "updated": now_iso(),
     }
-    if old.get("boost"):
-        SCHEDULES[sid]["boost"] = old["boost"]  # a running boost survives editing the schedule
+    for k in ("boost", "presence", "home_today"):  # survive editing the schedule
+        if old.get(k):
+            SCHEDULES[sid][k] = old[k]
     save_store()
     publish(sid)
     setup_triggers()
@@ -880,6 +969,76 @@ fields:
     save_store()
     set_all(sid, t)
     task.create(boost_timer, sid, token)
+
+
+@service
+def climate_schedule_settings(schedule_id=None, presence_persons=None, presence_replace=None, presence_preset=None):
+    """yaml
+name: Climate schedule settings
+description: Presence settings of a schedule (set by the card; does not re-program the valves).
+fields:
+  schedule_id:
+    description: Schedule id
+    required: true
+    example: living_room
+    selector:
+      text:
+  presence_persons:
+    description: "Persons: home mode while at least one of them is home"
+    selector:
+      entity:
+        domain: person
+        multiple: true
+  presence_replace:
+    description: "Preset names raised while someone is home, e.g. [Away]"
+    selector:
+      object:
+  presence_preset:
+    description: "Preset name to raise them to, e.g. Comfort"
+    selector:
+      text:
+"""
+    sid = slug(schedule_id)
+    s = SCHEDULES.get(sid)
+    if not s:
+        raise ValueError(f"unknown schedule {schedule_id}")
+    persons = presence_persons or []
+    if isinstance(persons, str):
+        persons = [persons]
+    replace = presence_replace or []
+    if isinstance(replace, str):
+        replace = [replace]
+    s["presence"] = {"persons": list(persons), "replace": list(replace), "preset": presence_preset or None}
+    save_store()
+    setup_triggers()
+    presence_eval(sid)
+
+
+@service
+def climate_schedule_home_today(schedule_id=None, enable=True):
+    """yaml
+name: Home today
+description: Treat the room as occupied (home mode) until midnight, or switch that off again.
+fields:
+  schedule_id:
+    description: Schedule id
+    required: true
+    example: living_room
+    selector:
+      text:
+  enable:
+    description: On or off
+    example: true
+    selector:
+      boolean:
+"""
+    sid = slug(schedule_id)
+    s = SCHEDULES.get(sid)
+    if not s:
+        raise ValueError(f"unknown schedule {schedule_id}")
+    s["home_today"] = datetime.now().date().isoformat() if str(enable).lower() in ("true", "1", "yes", "on") else None
+    save_store()
+    presence_eval(sid)
 
 
 @service

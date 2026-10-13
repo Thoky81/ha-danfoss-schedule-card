@@ -1,5 +1,5 @@
 /*
- * danfoss-schedule-card  v1.14
+ * danfoss-schedule-card  v1.15
  * Paint-grid week schedule for Danfoss Ally TRVs (ZHA and/or Zigbee2MQTT) – backend: pyscript/climate_schedule.py
  *
  * type: custom:danfoss-schedule-card
@@ -9,6 +9,9 @@
  * temperature_sensor: sensor.living_room_temperature   # optional, room temperature in the header
  * show_graph: true                    # room temperature + target history (needs temperature_sensor)
  * battery_low: 15                     # %, valve battery shown red below this
+ * presence_persons: [person.a, person.b]  # home mode while at least one of them is home
+ * presence_replace: [Away]            # presets raised in home mode
+ * presence_preset: Comfort            # …to this preset
  * climates:                           # climate entities (or {entity, ieee} / {entity, z2m})
  *   - climate.living_room_trv_1
  * mode: native                        # native = program valves | ha = HA sets temperature
@@ -16,7 +19,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.14.4';
+  const VERSION = '1.15.0';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -56,6 +59,15 @@
     const d = new Date(iso), t = fmt(d.getHours() * 60 + d.getMinutes());
     return d.toDateString() === new Date().toDateString() ? t : `${DAYS[(d.getDay() + 6) % 7]} ${t}`;
   };
+  const presenceCfg = (cfg, presets) => {
+    const names = presets.map((p) => p.name);
+    return {
+      persons: cfg.presence_persons || [],
+      replace: cfg.presence_replace || (names.includes('Away') ? ['Away'] : []),
+      preset: cfg.presence_preset || (names.includes('Comfort') ? 'Comfort' : null),
+    };
+  };
+  const normPresence = (x) => JSON.stringify({ persons: [...(x.persons || [])].sort(), replace: [...(x.replace || [])].sort(), preset: x.preset || null });
   const normP = (ps) => JSON.stringify((ps || []).map((p) => ({ name: String(p.name), temp: +p.temp, color: String(p.color) })));
   const fitDays = (days, n) => days.map((d) => d.replace(/./g, (ch) => (+ch < n ? ch : '0')));
   const nowPos = () => { const d = new Date(); return { day: (d.getDay() + 6) % 7, min: d.getHours() * 60 + d.getMinutes() }; };
@@ -83,6 +95,7 @@
       this._hass = h;
       const watch = [this._eid, ...this._climates(), this._cfg && this._cfg.temperature_sensor].filter(Boolean);
       this._histCheck(old);
+      this._syncPresence();
       if (!old || watch.some((id) => old.states[id] !== h.states[id])) { if (!this._hold()) this._render(); }
     }
 
@@ -180,6 +193,26 @@
       try { await this._hass.callService('pyscript', 'climate_schedule_boost_cancel', { schedule_id: slug(this._cfg.schedule_id) }); this._toast('Boost cancelled, back to the schedule'); }
       catch (e) { this._toast('Cancel failed: ' + errText(e), true); }
     }
+    /* presence settings live in the card config; the backend needs them even when no card is open */
+    _syncPresence() {
+      const e = this._entity();
+      if (!e || !Array.isArray(e.attributes.days) || !this._hass?.callService) return;
+      const want = presenceCfg(this._cfg, e.attributes.presets || []), have = e.attributes.presence || {};
+      if (!want.persons.length && !(have.persons || []).length) return; // presence not used
+      const key = normPresence(want);
+      if (key === normPresence(have) || key === this._sentPresence) return;
+      this._sentPresence = key;
+      this._hass.callService('pyscript', 'climate_schedule_settings', {
+        schedule_id: slug(this._cfg.schedule_id), presence_persons: want.persons, presence_replace: want.replace, presence_preset: want.preset,
+      }).catch(() => { this._sentPresence = null; });
+    }
+    async _homeToday(on) {
+      try {
+        await this._hass.callService('pyscript', 'climate_schedule_home_today', { schedule_id: slug(this._cfg.schedule_id), enable: on });
+        this._toast(on ? 'Home today: on until midnight' : 'Home today: off');
+      } catch (e) { this._toast('Home today failed: ' + errText(e), true); }
+    }
+
     /* ---------- valve device helpers ---------- */
     /* entity ids of the same device (battery sensor, Z2M limit numbers); the map is rebuilt
        only when HA hands out a new entity registry */
@@ -396,9 +429,10 @@
       const cfgC = {}; (this._cfg.climates || []).forEach((x) => { if (typeof x !== 'string') cfgC[x.entity] = x; });
       /* what the valves should be set to now: the boost, else the saved schedule's current block.
          Right after a block change the valve reports its new setpoint with a delay: no warning then. */
-      const sv = this._saved(), bo = ent?.attributes.boost;
+      const sv = this._saved(), bo = ent?.attributes.boost, ps = ent?.attributes.presence_state;
       let want = null, grace = false;
       if (bo) want = +bo.temp;
+      else if (ps?.active) want = +ps.temp;
       else if (sv) {
         const c = Math.floor(np.min / SLOT_MIN), tAt = (d, k) => +sv.presets[+sv.days[d][k]].temp;
         want = tAt(np.day, c);
@@ -428,7 +462,7 @@
           if (Math.abs(fit(+sv.presets[+sv.days[(d.getDay() + 6) % 7][k]].temp) - sp) < 0.05) { lag = hh; break; }
         }
         const set = isNaN(sp) ? '' : `<span class="set${off ? ' off' : ''}" title="${esc(off
-          ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : 'the schedule'} says ${exp.toFixed(1)}°${limited ? ` (${want.toFixed(1)}°, limited by this valve's ${exp < want ? 'max' : 'min'} setting)` : ''}. ${lag
+          ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : ps?.active ? 'home mode' : 'the schedule'} says ${exp.toFixed(1)}°${limited ? ` (${want.toFixed(1)}°, limited by this valve's ${exp < want ? 'max' : 'min'} setting)` : ''}. ${lag
             ? `That's the schedule of ${lag} h ago: the valve clock is probably ${lag} h behind – press Re-sync to set it.`
             : `Changed by hand on the valve, or the ${bo ? 'boost' : 'schedule'} wasn't applied.`}`
           : limited ? `Valve is set to ${sp.toFixed(1)}°. ${bo ? 'The boost' : 'The schedule'} says ${want.toFixed(1)}°, but this valve is limited to ${exp < want ? 'max' : 'min'} ${exp.toFixed(1)}°.`
@@ -444,8 +478,12 @@
       const rs = this._cfg.temperature_sensor && this._hass?.states[this._cfg.temperature_sensor];
       const room = rs && !isNaN(parseFloat(rs.state)) ? `${parseFloat(rs.state).toFixed(1)}°` : rs ? '—' : null;
       const boost = ent?.attributes.boost;
+      const pst = ent?.attributes.presence_state, homeToday = !!ent?.attributes.home_today;
+      const pPre = pst?.active && data.presets.find((p) => p.name === pst.preset);
       const nowHtml = boost
         ? `<b style="color:#ff453a">${(+boost.temp).toFixed(1)}°</b><div class="s">Boost until ${boost.kind === 'next' ? 'next change, ' : ''}${untilTxt(boost.until)}</div>`
+        : pst?.active
+        ? `<b style="color:${pPre?.color || 'var(--txt)'}">${(+pst.temp).toFixed(1)}°</b><div class="s">${esc(pst.preset || '')} · home</div>`
         : `<b style="color:${data.presets[cur.p].color}">${(+cur.t).toFixed(1)}°</b><div class="s">${esc(data.presets[cur.p].name)}${cur.until ? ' until ' + cur.until : ''}</div>`;
       const boostPanel = this._bo && !ed ? `
         <div class="boost">
@@ -461,6 +499,7 @@
           <button class="btn" data-a="cancel">Cancel</button>
           ${saveBtn}` : `
           <button class="btn" data-a="edit">✎ Edit schedule</button>
+          ${ent ? `<button class="btn${homeToday ? ' on' : ''}" data-a="home" title="${homeToday ? 'Home today is on until midnight – click to switch off' : 'Treat the room as occupied until midnight'}">🏠 Home today</button>` : ''}
           ${ent ? (boost ? '<button class="btn hot" data-a="unboost">Cancel boost</button>' : '<button class="btn" data-a="boost">🔥 Boost</button>') : ''}
           <span class="sp"></span>
           ${ent && mode === 'native' && !pc ? '<button class="btn" data-a="resync">Re-sync</button>' : ''}
@@ -469,7 +508,8 @@
         <div class="head">
           <div class="ic">${icon.includes(':') ? `<ha-icon icon="${esc(icon)}"></ha-icon>` : esc(icon)}</div>
           <div class="ttl"><div class="t">${esc(this._cfg.title)}</div>
-            <div class="s"><span class="badge ${mode}">${mode === 'ha' ? 'HA-driven' : 'On-valve schedule'}</span> ${savedTxt}</div></div>
+            <div class="s"><span class="badge ${mode}">${mode === 'ha' ? 'HA-driven' : 'On-valve schedule'}</span>${pst?.active ? `<span class="badge home" title="${esc(pst.who?.length
+              ? 'Home: ' + pst.who.map((p) => this._hass?.states[p]?.attributes.friendly_name || p).join(', ') : 'Home today (manual)')}">🏠 Home${pst.who?.length ? '' : ' today'}</span>` : ''} ${savedTxt}</div></div>
           <div class="nowt">
             ${room ? `<div class="room" title="${esc(rs.attributes.friendly_name || this._cfg.temperature_sensor)}"><b>${room}</b><div class="s">Room</div></div>` : ''}
             <div>${nowHtml}</div>
@@ -519,6 +559,7 @@
         else if (a === 'bclose') { this._bo = false; this._render(); }
         else if (a === 'bstart') this._boostStart();
         else if (a === 'unboost') this._boostCancel();
+        else if (a === 'home') this._homeToday(!homeToday);
         else if (a === 'edit') { this._bo = false; this._editing = true; this._sel = Math.min(this._sel, data.presets.length - 1); this._render(); }
         else if (a === 'cancel') { this._draft = null; this._editing = false; this._render(); }
         else if (a === 'resync') this._resync();
@@ -558,6 +599,8 @@
   .nm{font-size:13px}.tv{font-variant-numeric:tabular-nums;font-weight:600;font-size:13px}
   .hint{color:var(--mut);font-size:12px;margin:-4px 0 8px}
   .btn.hot{border-color:#ff453a;color:#ff453a}
+  .btn.on{border-color:#34c759;color:#34c759;font-weight:600}
+  .badge.home{background:rgba(52,199,89,.18);color:#34c759}
   .boost{margin-top:10px;padding:10px 12px;border-radius:12px;background:var(--bg2);display:flex;flex-direction:column;gap:8px}
   .brow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.brow.end{justify-content:flex-end}
   .bl{color:var(--mut);font-size:13px;min-width:62px}
@@ -651,6 +694,9 @@
       { value: 'ha', label: 'HA – Home Assistant sets the temperature' },
     ] } } },
     { name: 'oper_mode', selector: { number: { min: 0, max: 255, mode: 'box' } } },
+    { name: 'presence_persons', selector: { entity: { multiple: true, filter: { domain: 'person' } } } },
+    { name: 'presence_replace', selector: { select: { multiple: true, mode: 'list', options: [] } } },
+    { name: 'presence_preset', selector: { select: { mode: 'dropdown', options: [] } } },
     { name: 'nightly_resync', selector: { boolean: {} } },
     { name: 'z2m_base_topic', selector: { text: {} } },
   ];
@@ -661,12 +707,18 @@
     climates: ['Valves', 'All valves on this card get the same schedule.'],
     temperature_sensor: ['Room temperature sensor', 'Optional. Shown in the header next to the target temperature.'],
     battery_low: ['Battery warning below', 'The valve battery on the card turns red below this level (default 15 %).'],
+    presence_persons: ['Presence: people', 'Home mode while at least one of them is home (the "Home today" button on the card does the same until midnight).'],
+    presence_replace: ['Presence: raise these presets', 'Blocks with these presets are raised while someone is home.'],
+    presence_preset: ['Presence: raise to', 'Preset used instead. Never lowers a room.'],
     show_graph: ['Show temperature history', 'Today (or yesterday) under the schedule: room temperature and the target per half hour. Needs a room temperature sensor.'],
     mode: ['Mode', 'Native keeps running even when HA or Zigbee is down.'],
     oper_mode: ['Operation mode after upload', 'Advanced. programming_operation_mode written after programming (default 1 = schedule).'],
     nightly_resync: ['Re-program valves every night', 'Off: valves are only re-programmed when you save, press Re-sync, or a valve comes back after a battery change.'],
     z2m_base_topic: ['Zigbee2MQTT base topic', 'Only for Zigbee2MQTT valves. Leave empty for the default "zigbee2mqtt".'],
   };
+  /* the presence selects list this room's own preset names */
+  const editorSchema = (names) => EDITOR_SCHEMA.map((f) => (f.name === 'presence_replace' || f.name === 'presence_preset'
+    ? { ...f, selector: { select: { ...f.selector.select, options: names } } } : f));
   const PALETTE = ['#ff8a3d', '#34c759', '#5e5ce6', '#8e8e93', '#ff453a', '#0a84ff', '#ffd60a', '#bf5af2'];
 
   class DanfossScheduleCardEditor extends HTMLElement {
@@ -695,7 +747,7 @@
       const ieee = {};
       (this._cfg.climates || []).forEach((x) => { if (typeof x !== 'string') ieee[x.entity] = x; });
       const cfg = { ...this._cfg };
-      for (const { name } of EDITOR_SCHEMA) {
+      for (const { name } of this._form.schema) {
         const val = v[name];
         if (val === undefined || val === null || val === '' || (Array.isArray(val) && !val.length)) delete cfg[name];
         else cfg[name] = val;
@@ -708,7 +760,9 @@
       if (!this._cfg) return;
       if (!this.shadowRoot) this._build();
       this._form.hass = this._hass;
-      this._form.data = { mode: 'native', show_graph: true, battery_low: BATTERY_LOW, ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
+      const names = this._presets().map((p) => p.name), pc = presenceCfg(this._cfg, this._presets());
+      if (JSON.stringify(names) !== this._schemaNames) { this._schemaNames = JSON.stringify(names); this._form.schema = editorSchema(names); }
+      this._form.data = { mode: 'native', show_graph: true, battery_low: BATTERY_LOW, presence_replace: pc.replace, presence_preset: pc.preset || undefined, ...this._cfg, climates: (this._cfg.climates || []).map((x) => (typeof x === 'string' ? x : x.entity)) };
       this._renderNote();
       this._syncPresets();
     }

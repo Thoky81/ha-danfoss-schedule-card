@@ -24,7 +24,7 @@ pyscript:
 Copy [`pyscript/climate_schedule.py`](pyscript/climate_schedule.py) to `/config/pyscript/`, restart HA (first time) or reload pyscript.
 Schedules are saved to `/config/climate_schedules.json`.
 
-Services: `pyscript.climate_schedule_save`, `pyscript.climate_schedule_push`, `pyscript.climate_schedule_delete`, `pyscript.climate_schedule_boost`, `pyscript.climate_schedule_boost_cancel`, `pyscript.climate_schedule_sync_time`.
+Services: `pyscript.climate_schedule_save`, `pyscript.climate_schedule_push`, `pyscript.climate_schedule_delete`, `pyscript.climate_schedule_boost`, `pyscript.climate_schedule_boost_cancel`, `pyscript.climate_schedule_sync_time`, `pyscript.climate_schedule_settings`, `pyscript.climate_schedule_home_today`.
 
 ## 2. Card
 
@@ -56,6 +56,9 @@ icon: mdi:thermometer    # any mdi: icon, or an emoji
 temperature_sensor: sensor.living_room_temperature   # optional, room temperature in the header
 show_graph: true         # today's room temperature + target under the schedule (needs temperature_sensor)
 battery_low: 15          # %, valve battery shown red below this
+presence_persons: [person.tomas, person.zuzana]   # optional home mode, see Presence
+presence_replace: [Away]  # presets raised while someone is home (default Away)
+presence_preset: Comfort  # …to this preset (default Comfort)
 climates:
   - climate.living_room_trv_1
   - climate.living_room_trv_2
@@ -107,6 +110,11 @@ With a room temperature sensor set, the bottom of the card shows **today** (or *
 ### Valve alerts (optional)
 [`extras/danfoss_alerts.yaml`](extras/danfoss_alerts.yaml) is a Home Assistant package, independent of the card, that sends a phone notification for each **new** valve problem and an "all OK" when they're solved:
 error codes (ZHA `sensor.danfoss_*_software_error`, Z2M `sensor.danfoss_*_system_status_code`), a valve without contact for 30 min, battery under 20 %, and valves the schedule couldn't program. Put it in `/config/packages/`, set your `notify.mobile_app_…` action in it, and enable packages in `configuration.yaml` (`homeassistant: packages: !include_dir_named packages`). Valves are matched by entity ids starting with `danfoss_`.
+
+### Presence (home mode)
+Pick one or more **people** in the card editor (*Presence: people*). While **at least one of them is home**, blocks of the presets in *Presence: raise these presets* (default **Away**) are raised to *Presence: raise to* (default **Comfort**) – e.g. working from home on a weekday. The header shows **🏠 Home** and the raised target; it never lowers a room, and a Boost takes priority. **🏠 Home today** on the card does the same by hand until midnight.
+
+It runs in the backend, so it works without the card open: valves stay in schedule mode, the temperature is set temporarily and re-applied after the valve's own block changes, and when nobody is home anymore the room goes straight back to the schedule. The card sends these settings to the backend by itself (no Save & program needed). Services: `pyscript.climate_schedule_settings`, `pyscript.climate_schedule_home_today`.
 
 ### Boost
 **🔥 Boost** sets all valves of the card to a temperature for 30 min – 3 h, or until the next block change, then returns them to the schedule. While it runs the header shows e.g. *24.0° Boost until 16:30*, and **Cancel boost** ends it early.

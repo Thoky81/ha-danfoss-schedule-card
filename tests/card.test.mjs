@@ -52,7 +52,7 @@ const test = (name, fn) => tests.push([name, fn]);
 test('view mode: locked grid, no -/+ buttons, taps do not paint', () => {
   const w = env(); const { hass } = hassWith(saved());
   const { c, q, R, btns } = mount(w, {}, hass);
-  assert.deepEqual(btns(), ['✎ Edit schedule', '🔥 Boost', 'Re-sync']);
+  assert.deepEqual(btns(), ['✎ Edit schedule', '🏠 Home today', '🔥 Boost', 'Re-sync']);
   assert.equal(R.querySelectorAll('.chip .tb').length, 0);
   q('.cell[data-d="0"][data-c="20"]').dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
   assert.equal(c._draft, null);
@@ -156,7 +156,7 @@ test('editor: shows saved presets, undo, only last unused preset removable', () 
   ed.hass = hassWith(saved({ days: Array(7).fill('2'.repeat(48)) })).hass;
   assert.equal(E.querySelector('.del').disabled, true, 'last preset in use');
   assert.deepEqual(plain(E.querySelector('ha-form').schema.map((x) => x.name)),
-    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'battery_low', 'mode', 'oper_mode', 'nightly_resync', 'z2m_base_topic']);
+    ['schedule_id', 'title', 'icon', 'climates', 'temperature_sensor', 'show_graph', 'battery_low', 'mode', 'oper_mode', 'presence_persons', 'presence_replace', 'presence_preset', 'nightly_resync', 'z2m_base_topic']);
 });
 
 test('history graph: one day aligned with the rows, 48 preset-coloured bars, yesterday/today, hover', async () => {
@@ -347,6 +347,60 @@ test('graph: a reading holds until an unknown/unavailable (no gap before it)', a
   assert.match(d, /^M0\.0,[\d.]+H[\d.]+M/, 'first piece runs flat from midnight up to the unknown');
   const h = +d.match(/^M0\.0,[\d.]+H([\d.]+)/)[1];
   assert.ok(Math.abs(h - W / 24) < 1, 'up to 01:00, where the unknown happened');
+});
+
+test('presence: settings sync to the backend once, with Away -> Comfort defaults', async () => {
+  const w = env();
+  const P2 = [{ name: 'Comfort', temp: 22, color: '#ff8a3d' }, { name: 'Away', temp: 15, color: '#8e8e93' }];
+  const { hass, calls } = hassWith(saved({ presets: P2 }));
+  const { c } = mount(w, { presence_persons: ['person.tomas', 'person.zuzana'] }, hass);
+  await tick();
+  const sync = calls.filter((x) => x[1] === 'climate_schedule_settings');
+  assert.equal(sync.length, 1);
+  assert.deepEqual(plain(sync[0][2]), { schedule_id: 'obyvak', presence_persons: ['person.tomas', 'person.zuzana'], presence_replace: ['Away'], presence_preset: 'Comfort' });
+  c.hass = { ...hass }; await tick();
+  assert.equal(calls.filter((x) => x[1] === 'climate_schedule_settings').length, 1, 'not sent again');
+  // backend has it now -> nothing to send
+  const { hass: h2, calls: c2 } = hassWith(saved({ presets: P2, presence: { persons: ['person.zuzana', 'person.tomas'], replace: ['Away'], preset: 'Comfort' } }));
+  mount(w, { presence_persons: ['person.tomas', 'person.zuzana'] }, h2); await tick();
+  assert.equal(c2.length, 0);
+});
+
+test('presence active: badge, target in header, chips expect the presence temperature', () => {
+  const w = env();
+  const flat = saved({ days: Array(7).fill('1'.repeat(48)), presence_state: { active: true, temp: 22, preset: 'Comfort', who: ['person.tomas'], manual: false, sched: 15 } });
+  const { hass } = hassWith(flat, { 'climate.a': { state: 'heat', attributes: { friendly_name: 'TRV', current_temperature: 20, temperature: 22 } },
+    'person.tomas': { state: 'home', attributes: { friendly_name: 'Tomas' } } });
+  const { q } = mount(w, {}, hass);
+  assert.match(q('.badge.home').textContent, /Home$/);
+  assert.match(q('.badge.home').title, /Tomas/);
+  assert.match(q('.nowt').textContent, /22\.0°\s*Comfort · home/);
+  assert.ok(!q('.set').classList.contains('off'), 'valve at 22° matches home mode');
+});
+
+test('Home today button toggles the backend switch', async () => {
+  const w = env();
+  let { hass, calls } = hassWith(saved());
+  let { q } = mount(w, {}, hass);
+  q('[data-a=home]').click(); await tick();
+  assert.deepEqual(plain(calls[0]), ['pyscript', 'climate_schedule_home_today', { schedule_id: 'obyvak', enable: true }]);
+  ({ hass, calls } = hassWith(saved({ home_today: true })));
+  ({ q } = mount(w, {}, hass));
+  assert.ok(q('[data-a=home]').classList.contains('on'));
+  q('[data-a=home]').click(); await tick();
+  assert.equal(calls[0][2].enable, false);
+});
+
+test('editor: presence selects list this room\'s presets', () => {
+  const w = env(); const { hass } = hassWith(saved());
+  const ed = w.document.createElement('danfoss-schedule-card-editor'); w.document.body.appendChild(ed);
+  ed.hass = hass; ed.setConfig({ schedule_id: 'obyvak', climates: ['climate.a'] });
+  const f = ed.shadowRoot.querySelector('ha-form');
+  const opt = (n) => plain(f.schema.find((x) => x.name === n).selector.select.options);
+  assert.deepEqual(opt('presence_replace'), ['Comfort', 'Away', 'Warm']);
+  assert.deepEqual(opt('presence_preset'), ['Comfort', 'Away', 'Warm']);
+  assert.deepEqual(plain(f.data.presence_replace), ['Away']);
+  assert.equal(f.data.presence_preset, 'Comfort');
 });
 
 let failed = 0;
