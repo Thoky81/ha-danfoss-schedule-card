@@ -301,6 +301,22 @@ test('failed valve: next try in tooltip, click the red dot to retry just that va
   assert.deepEqual(plain(calls[0]), ['pyscript', 'climate_schedule_push', { schedule_id: 'obyvak', valve: 'climate.a' }]);
 });
 
+test('graph: glitch readings are dropped, unavailable leaves a "no data" gap', async () => {
+  const w = env(); const { hass } = hassWith(saved(), { 'sensor.t': { state: '21', attributes: {} } });
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0); const at = (h) => d0.getTime() / 1000 + h * 3600;
+  hass.callWS = async () => ({ 'sensor.t': [
+    { s: '20.0', lu: at(0.5) }, { s: '655.35', lu: at(1) }, { s: '20.2', lu: at(1.5) },
+    { s: 'unavailable', lu: at(2) }, { s: '20.4', lu: at(3) } ] });
+  const { c, q } = mount(w, { temperature_sensor: 'sensor.t' }, hass);
+  await tick(); await tick();
+  if (new Date().getHours() < 4) return; // needs the test points to be in the past
+  const d = q('.rl').getAttribute('d');
+  assert.equal((d.match(/M/g) || []).length, 2, 'one gap (unavailable), no break for the glitch');
+  assert.ok(!c._gm.room.some((p) => p.v > 60), 'glitch value dropped');
+  c._gHover(2.5 / 24);
+  assert.match(q('.gtip').textContent, /no data/);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }

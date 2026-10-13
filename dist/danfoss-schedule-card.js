@@ -16,7 +16,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.14.0';
+  const VERSION = '1.14.1';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -47,6 +47,9 @@
   const BATTERY_LOW = 15; // %, default for battery_low: the valve chip's battery turns red below this
   const G_LO = 5, G_HI = 35; // fixed scale = the Ally's setpoint range, same on every card
   const HIST_REFRESH = 10 * 60e3;
+  /* a room temperature outside this range is a sensor glitch (e.g. 327.67 / 655.35 from an invalid
+     reading): dropped, so the line continues instead of spiking. unavailable/unknown stay gaps. */
+  const reading = (state) => { const v = parseFloat(state); return isNaN(v) ? NaN : v < -30 || v > 60 ? null : v; };
   const durTxt = (m) => (!m ? 'Until next change' : m < 60 ? `${m} min` : `${m / 60} h`);
   const untilTxt = (iso) => {
     const d = new Date(iso), t = fmt(d.getHours() * 60 + d.getMinutes());
@@ -213,7 +216,7 @@
       const id = this._cfg.temperature_sensor, h = this._hist;
       if (!h || h.id !== id || Date.now() - h.at > HIST_REFRESH) { this._loadHist(); return; }
       const st = this._hass.states[id];
-      if (old && st && old.states[id] !== st) h.pts.push({ t: Date.parse(st.last_updated) || Date.now(), v: parseFloat(st.state) });
+      if (old && st && old.states[id] !== st) { const v = reading(st.state); if (v !== null) h.pts.push({ t: Date.parse(st.last_updated) || Date.now(), v }); }
     }
     async _loadHist() {
       if (this._histBusy || !this._hass?.callWS) return;
@@ -225,7 +228,7 @@
           type: 'history/history_during_period', start_time: y0.toISOString(),
           entity_ids: [id], minimal_response: true, no_attributes: true, significant_changes_only: false,
         });
-        this._hist = { id, at: Date.now(), pts: (r[id] || []).map((x) => ({ t: (x.lu || x.lc) * 1000, v: parseFloat(x.s) })) };
+        this._hist = { id, at: Date.now(), pts: (r[id] || []).map((x) => ({ t: (x.lu || x.lc) * 1000, v: reading(x.s) })).filter((p) => p.v !== null) };
       } catch (e) { this._hist = { id, at: Date.now(), pts: [], err: true }; }
       this._histBusy = false;
       if (!this._hold()) this._render();
@@ -295,7 +298,7 @@
       dot.style.left = pct; dot.style.display = r == null ? 'none' : ''; if (r != null) dot.style.top = `${(m.Y(r) / GH) * 100}%`;
       const tip = gp.querySelector('.gtip');
       tip.innerHTML = `<div class="tt">${DAYS[(dt.getDay() + 6) % 7]} ${fmt(dt.getHours() * 60 + dt.getMinutes())}</div>
-        <div><i class="kr"></i><b>${r == null ? '—' : r.toFixed(1) + '°'}</b> Room</div>
+        <div><i class="kr"></i><b>${r != null ? r.toFixed(1) + '°' : t > m.now ? '—' : 'no data'}</b> Room</div>
         <div><i style="background:${sg.color}"></i><b>${(+sg.temp).toFixed(1)}°</b> ${esc(sg.name)}${t > m.now ? ' (planned)' : ''}</div>`;
       tip.style.left = pct; tip.classList.toggle('flip', fx > 0.6);
       gp.classList.add('hov');
