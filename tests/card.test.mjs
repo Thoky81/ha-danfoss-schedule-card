@@ -315,6 +315,24 @@ test('graph: glitch readings are dropped, unavailable leaves a "no data" gap', a
   assert.ok(!c._gm.room.some((p) => p.v > 60), 'glitch value dropped');
   c._gHover(2.5 / 24);
   assert.match(q('.gtip').textContent, /no data/);
+  assert.match(q('.gtip').textContent, /unavailable since 02:00/);
+});
+
+test('history: a request that never answers does not block reloads; tab return reloads', async () => {
+  const w = env(); const { hass } = hassWith(saved(), { 'sensor.t': { state: '21', attributes: {} } });
+  let n = 0;
+  hass.callWS = () => { n++; return n === 1 ? new Promise(() => {}) : Promise.resolve({ 'sensor.t': [{ s: '20', lu: Date.now() / 1000 - 60 }] }); };
+  const { c } = mount(w, { temperature_sensor: 'sensor.t' }, hass);
+  assert.equal(n, 1, 'first request hangs (tab went to sleep)');
+  c._histBusy = Date.now() - 21e3; // 20 s later
+  c._histCheck(null);
+  await tick(); await tick();
+  assert.equal(n, 2, 'a new request is made after the timeout');
+  assert.equal(c._hist.pts.length, 1);
+  Object.defineProperty(w.document, 'visibilityState', { value: 'visible', configurable: true });
+  w.document.dispatchEvent(new w.Event('visibilitychange'));
+  await tick();
+  assert.equal(n, 3, 'coming back to the tab reloads the history');
 });
 
 let failed = 0;

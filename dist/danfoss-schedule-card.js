@@ -16,7 +16,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.14.1';
+  const VERSION = '1.14.2';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -47,6 +47,7 @@
   const BATTERY_LOW = 15; // %, default for battery_low: the valve chip's battery turns red below this
   const G_LO = 5, G_HI = 35; // fixed scale = the Ally's setpoint range, same on every card
   const HIST_REFRESH = 10 * 60e3;
+  const HIST_TIMEOUT = 20e3; // a request lost while the tab slept must not block reloads forever
   /* a room temperature outside this range is a sensor glitch (e.g. 327.67 / 655.35 from an invalid
      reading): dropped, so the line continues instead of spiking. unavailable/unknown stay gaps. */
   const reading = (state) => { const v = parseFloat(state); return isNaN(v) ? NaN : v < -30 || v > 60 ? null : v; };
@@ -88,8 +89,11 @@
     connectedCallback() {
       this._timer = setInterval(() => { if (!this._hold()) this._render(); }, 60000);
       if (this._ro) this._ro.observe(this._card);
+      // back from a sleeping tab: the live updates missed meanwhile are only in the history
+      this._onVis = () => { if (document.visibilityState === 'visible' && this._graphOn()) { this._histBusy = 0; this._loadHist(); } };
+      document.addEventListener('visibilitychange', this._onVis);
     }
-    disconnectedCallback() { clearInterval(this._timer); this._ro?.disconnect(); }
+    disconnectedCallback() { clearInterval(this._timer); this._ro?.disconnect(); document.removeEventListener('visibilitychange', this._onVis); }
 
     _hold() { return this._painting; }
 
@@ -216,21 +220,28 @@
       const id = this._cfg.temperature_sensor, h = this._hist;
       if (!h || h.id !== id || Date.now() - h.at > HIST_REFRESH) { this._loadHist(); return; }
       const st = this._hass.states[id];
-      if (old && st && old.states[id] !== st) { const v = reading(st.state); if (v !== null) h.pts.push({ t: Date.parse(st.last_updated) || Date.now(), v }); }
+      if (old && st && old.states[id] !== st) { const v = reading(st.state); if (v !== null) h.pts.push({ t: Date.parse(st.last_updated) || Date.now(), v, raw: st.state, live: true }); }
     }
     async _loadHist() {
-      if (this._histBusy || !this._hass?.callWS) return;
-      this._histBusy = true;
+      if ((this._histBusy && Date.now() - this._histBusy < HIST_TIMEOUT) || !this._hass?.callWS) return;
+      const busy = (this._histBusy = Date.now());
       const id = this._cfg.temperature_sensor;
       try { // yesterday 00:00 until now covers both day views
         const y0 = new Date(); y0.setHours(0, 0, 0, 0); y0.setDate(y0.getDate() - 1);
-        const r = await this._hass.callWS({
-          type: 'history/history_during_period', start_time: y0.toISOString(),
-          entity_ids: [id], minimal_response: true, no_attributes: true, significant_changes_only: false,
-        });
-        this._hist = { id, at: Date.now(), pts: (r[id] || []).map((x) => ({ t: (x.lu || x.lc) * 1000, v: reading(x.s) })).filter((p) => p.v !== null) };
-      } catch (e) { this._hist = { id, at: Date.now(), pts: [], err: true }; }
-      this._histBusy = false;
+        const r = await Promise.race([
+          this._hass.callWS({
+            type: 'history/history_during_period', start_time: y0.toISOString(),
+            entity_ids: [id], minimal_response: true, no_attributes: true, significant_changes_only: false,
+          }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), HIST_TIMEOUT)),
+        ]);
+        this._hist = { id, at: Date.now(), pts: (r[id] || []).map((x) => ({ t: (x.lu || x.lc) * 1000, v: reading(x.s), raw: x.s })).filter((p) => p.v !== null) };
+      } catch (e) {
+        // keep what is drawn and try again in a minute; only an empty graph shows the error
+        if (this._hist?.id === id && !this._hist.err) this._hist.at = Date.now() - HIST_REFRESH + 60e3;
+        else this._hist = { id, at: Date.now(), pts: [], err: true };
+      }
+      if (this._histBusy === busy) this._histBusy = 0;
       if (!this._hold()) this._render();
     }
     /* one calendar day, laid out exactly like the schedule rows above (same columns, one bar per half hour) */
@@ -289,8 +300,8 @@
       if (!m || !gp) return;
       if (fx == null) { gp.classList.remove('hov'); return; }
       const t = m.start + fx * (m.end - m.start);
-      let r = null; // last reading at or before t (none in the future)
-      if (t <= m.now) for (const p of m.room) { if (p.t > t) break; r = isNaN(p.v) ? null : p.v; }
+      let r = null, why = null; // last reading at or before t (none in the future); why: what made a gap
+      if (t <= m.now) for (const p of m.room) { if (p.t > t) break; r = isNaN(p.v) ? null : p.v; why = isNaN(p.v) ? p : null; }
       const sg = m.presets[+m.days[m.day][Math.min(SLOTS - 1, Math.floor(fx * SLOTS))]];
       const dt = new Date(t), pct = `${fx * 100}%`;
       gp.querySelector('.gcross').style.left = pct;
@@ -298,7 +309,7 @@
       dot.style.left = pct; dot.style.display = r == null ? 'none' : ''; if (r != null) dot.style.top = `${(m.Y(r) / GH) * 100}%`;
       const tip = gp.querySelector('.gtip');
       tip.innerHTML = `<div class="tt">${DAYS[(dt.getDay() + 6) % 7]} ${fmt(dt.getHours() * 60 + dt.getMinutes())}</div>
-        <div><i class="kr"></i><b>${r != null ? r.toFixed(1) + '°' : t > m.now ? '—' : 'no data'}</b> Room</div>
+        <div><i class="kr"></i><b>${r != null ? r.toFixed(1) + '°' : t > m.now ? '—' : 'no data'}</b> Room${why ? ` (${esc(why.raw || '?')} since ${fmt(new Date(why.t).getHours() * 60 + new Date(why.t).getMinutes())}${why.live ? ', live' : ''})` : ''}</div>
         <div><i style="background:${sg.color}"></i><b>${(+sg.temp).toFixed(1)}°</b> ${esc(sg.name)}${t > m.now ? ' (planned)' : ''}</div>`;
       tip.style.left = pct; tip.classList.toggle('flip', fx > 0.6);
       gp.classList.add('hov');
