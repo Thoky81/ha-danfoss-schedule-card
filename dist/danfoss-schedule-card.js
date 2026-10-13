@@ -16,7 +16,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.14.3';
+  const VERSION = '1.14.4';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -279,7 +279,13 @@
       const room = (first > 0 ? [{ t: start, v: h.pts[first - 1].v }] : []).concat(h.pts.slice(first).filter((p) => p.t < end));
       const stop = Math.min(now, end);
       let d = '', pen = false, lastV = null;
-      room.forEach((p) => { if (isNaN(p.v)) { pen = false; return; } d += `${pen ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`; pen = true; lastV = p.v; });
+      room.forEach((p) => {
+        // a reading holds until the next event: before unknown/unavailable, run flat up to that moment
+        // (otherwise a value followed by a gap is never drawn, e.g. 20.0 at 13:27 … unavailable at 16:07)
+        if (isNaN(p.v)) { if (pen) d += `H${X(p.t).toFixed(1)}`; pen = false; return; }
+        d += `${pen ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`; pen = true; lastV = p.v;
+      });
+      if (room.length && isNaN(room[room.length - 1].v)) lastV = null; // sensor unavailable now: no "current" dot
       if (pen && room.length) d += `H${X(stop).toFixed(1)}`; // the sensor holds its last value
       this._gm = { start, end, now, room, day, presets: data.presets, days: data.days, Y };
       const ys = [G_LO, (G_LO + G_HI) / 2, G_HI];

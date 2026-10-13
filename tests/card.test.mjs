@@ -335,6 +335,20 @@ test('history: a request that never answers does not block reloads; tab return r
   assert.equal(n, 3, 'coming back to the tab reloads the history');
 });
 
+test('graph: a reading holds until an unknown/unavailable (no gap before it)', async () => {
+  const w = env(); const { hass } = hassWith(saved(), { 'sensor.t': { state: '25', attributes: {} } });
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0); const at = (h) => d0.getTime() / 1000 + h * 3600;
+  // like "Spalna": one reading at midnight, an HA restart blip, the value again
+  hass.callWS = async () => ({ 'sensor.t': [{ s: '25', lu: at(0) }, { s: 'unknown', lu: at(1) }, { s: '25', lu: at(1.02) }] });
+  const { c, q } = mount(w, { temperature_sensor: 'sensor.t' }, hass);
+  await tick(); await tick();
+  if (new Date().getHours() < 2) return;
+  const d = q('.rl').getAttribute('d'), W = c._pw || 1000;
+  assert.match(d, /^M0\.0,[\d.]+H[\d.]+M/, 'first piece runs flat from midnight up to the unknown');
+  const h = +d.match(/^M0\.0,[\d.]+H([\d.]+)/)[1];
+  assert.ok(Math.abs(h - W / 24) < 1, 'up to 01:00, where the unknown happened');
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }
