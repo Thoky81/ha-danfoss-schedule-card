@@ -626,9 +626,47 @@ def presence_eval(sid, force=False):
     elif active:
         log.info(f"climate_schedule {sid}: presence ({', '.join(who) or 'home today'}) -> {target.get('name')} {float(target['temp']):g}°")
         set_all(sid, float(target["temp"]))  # re-applied after the valve's own block change too (sched changed)
+        task.create(verify_override, sid)
     elif prev.get("active") and prev.get("temp") != sched_t:  # the block may already be at that temperature
         log.info(f"climate_schedule {sid}: presence over -> schedule {sched_t:g}°")
         set_all(sid, sched_t)
+
+
+def override_temp(s):
+    """the temperature a boost or home mode holds the room at right now, else None"""
+    if s.get("boost"):
+        return float(s["boost"]["temp"])
+    ps = s.get("presence_state") or {}
+    return float(ps["temp"]) if ps.get("active") else None
+
+
+def verify_override(sid):
+    """3 and 6 minutes after setting a boost/home temperature, fix valves that don't have it: a lost
+    Zigbee command, or a valve whose clock runs a bit late and did its own block change after ours.
+    Only right after our own change, so a dial turned by hand later is left alone."""
+    task.unique(f"climate_schedule_verify_{sid}")
+    for _ in range(2):
+        task.sleep(180)
+        s = SCHEDULES.get(sid)
+        t = override_temp(s) if s else None
+        if t is None:
+            return
+        for c in s["climates"]:
+            eid = ent_id(c)
+            if is_unavailable(eid):
+                continue
+            lo, hi = valve_limits(eid)
+            want = min(hi, max(lo, t))
+            try:
+                sp = num((state.getattr(eid) or {}).get("temperature"))
+            except NameError:
+                sp = None
+            if sp is not None and abs(sp - want) > 0.05:
+                log.info(f"climate_schedule {sid}: {eid} is at {sp:g}°, setting {want:g}° again")
+                try:
+                    service.call("climate", "set_temperature", entity_id=eid, temperature=want)
+                except Exception as e:
+                    log.warning(f"climate_schedule {sid}: set_temperature {eid} failed: {type(e).__name__} {e}")
 
 
 def presence_wait(sid, delay):
@@ -703,6 +741,7 @@ def boost_timer(sid, token):
             b = SCHEDULES.get(sid, {}).get("boost")
             if b and b.get("token") == token:
                 set_all(sid, b["temp"])
+                task.create(verify_override, sid)
         else:
             task.sleep(max(1, (end - now).total_seconds()))
     # "until next change": the valve (or the HA tick) already moved on, only HA mode needs a push
@@ -992,6 +1031,7 @@ fields:
     save_store()
     set_all(sid, t)
     task.create(boost_timer, sid, token)
+    task.create(verify_override, sid)
 
 
 @service

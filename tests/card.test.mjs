@@ -438,6 +438,14 @@ test('off-screen card defers redraws until it becomes visible', () => {
   assert.match(q('.valves').textContent, /25\.5°/, 'caught up when visible');
 });
 
+test('home mode mismatch tooltip names home mode', () => {
+  const w = env();
+  const flat = saved({ days: Array(7).fill('1'.repeat(48)), presence_state: { active: true, temp: 23, preset: 'Comfort', who: ['person.t'], home: true, sched: 15 } });
+  const { q } = mount(w, {}, hassWith(flat, { 'climate.a': { state: 'heat', attributes: { friendly_name: 'TRV', current_temperature: 21, temperature: 19 } } }).hass);
+  assert.ok(q('.set').classList.contains('off'));
+  assert.match(q('.set').title, /home mode says 23\.0°.*or the home mode wasn't applied/);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message}`); }

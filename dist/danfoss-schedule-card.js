@@ -20,7 +20,7 @@
  *   - {name: Comfort, temp: 23, color: "#ff8a3d"}
  */
 (() => {
-  const VERSION = '1.16.0';
+  const VERSION = '1.16.1';
   const SLOTS = 48, SLOT_MIN = 30, MAX_BLOCKS = 6, MAX_PRESETS = 8;
   const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const DEFAULT_PRESETS = [
@@ -462,7 +462,11 @@
          Right after a block change the valve reports its new setpoint with a delay: no warning then. */
       const sv = this._saved(), bo = ent?.attributes.boost, ps = ent?.attributes.presence_state;
       let want = null, grace = false;
-      if (bo) want = +bo.temp;
+      if (sv) { // right after a block change the valves report their new setpoint with a delay: no warning then
+        const c = Math.floor(np.min / SLOT_MIN), tAt = (d, k) => +sv.presets[+sv.days[d][k]].temp;
+        grace = (c ? tAt(np.day, c - 1) : tAt((np.day + 6) % 7, SLOTS - 1)) !== tAt(np.day, c) && np.min % SLOT_MIN < 10;
+      }
+      if (bo) { want = +bo.temp; grace = false; }
       else if (ps?.active) want = +ps.temp;
       else if (sv) {
         const c = Math.floor(np.min / SLOT_MIN), tAt = (d, k) => +sv.presets[+sv.days[d][k]].temp;
@@ -495,7 +499,7 @@
         const set = isNaN(sp) ? '' : `<span class="set${off ? ' off' : ''}" title="${esc(off
           ? `Valve is set to ${sp.toFixed(1)}°, ${bo ? 'the boost' : ps?.active ? 'home mode' : 'the schedule'} says ${exp.toFixed(1)}°${limited ? ` (${want.toFixed(1)}°, limited by this valve's ${exp < want ? 'max' : 'min'} setting)` : ''}. ${lag
             ? `That's the schedule of ${lag} h ago: the valve clock is probably ${lag} h behind – press Re-sync to set it.`
-            : `Changed by hand on the valve, or the ${bo ? 'boost' : 'schedule'} wasn't applied.`}`
+            : `Changed by hand on the valve, or the ${bo ? 'boost' : ps?.active ? 'home mode' : 'schedule'} wasn't applied.`}`
           : limited ? `Valve is set to ${sp.toFixed(1)}°. ${bo ? 'The boost' : 'The schedule'} says ${want.toFixed(1)}°, but this valve is limited to ${exp < want ? 'max' : 'min'} ${exp.toFixed(1)}°.`
           : `Valve is set to ${sp.toFixed(1)}°`)}">set ${sp.toFixed(1)}°${limited && !off ? ` (${exp < want ? 'max' : 'min'})` : ''}${off ? ' ⚠' : ''}</span>`;
         const bat = this._battery(id);
