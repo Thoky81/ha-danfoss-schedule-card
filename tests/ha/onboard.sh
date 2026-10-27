@@ -1,7 +1,7 @@
 #!/bin/sh
 # create the owner user and finish onboarding; prints the token JSON
-B=http://127.0.0.1:8125
-CID=http://127.0.0.1:8125/
+B=http://127.0.0.1:8123
+CID=http://127.0.0.1:8123/
 CODE=$(curl -s -X POST $B/api/onboarding/users -H 'Content-Type: application/json' \
   -d "{\"client_id\":\"$CID\",\"name\":\"Test\",\"username\":\"test\",\"password\":\"test-pass-1234\",\"language\":\"en\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["auth_code"])')
 TOK=$(curl -s -X POST $B/auth/token -d "grant_type=authorization_code&code=$CODE&client_id=$CID")

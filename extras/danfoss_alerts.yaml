@@ -7,12 +7,13 @@
 #    - sensor.danfoss_*_battery below 20 %
 #    - a valve the schedule backend could not program (red dot on the card)
 #    New valves are picked up automatically as long as their entity ids start with "danfoss_".
-# 2. The automation sends each NEW problem once to the phone, and "all OK" when everything is clear again.
+# 2. sensor.danfoss_alerts_memory remembers when each problem appeared, for the notification automation
+#    in danfoss_alerts_automation.yaml (paste that one into the automation editor – it stays editable there).
 #
 # Install as a package: put this file in /config/packages/ and make sure configuration.yaml has
 #   homeassistant:
 #     packages: !include_dir_named packages
-# then restart Home Assistant.
+# then restart Home Assistant. Then add the automation from danfoss_alerts_automation.yaml in the UI.
 
 template:
   - sensor:
@@ -47,35 +48,14 @@ template:
             {% endfor %}
             {{ ns.p }}
 
-automation:
-  - id: danfoss_problems_notify
-    alias: Danfoss – notify valve problems
-    description: Sends each new Danfoss valve problem once, and a message when all are solved.
-    mode: queued
-    triggers:
-      - trigger: state
-        entity_id: sensor.danfoss_problems
-        attribute: problems
-    conditions:
-      # not after a restart / reload of the template sensor
-      - "{{ trigger.from_state is not none and trigger.from_state.state not in ['unknown', 'unavailable'] }}"
-    actions:
-      - variables:
-          before: "{{ trigger.from_state.attributes.problems or [] }}"
-          after: "{{ trigger.to_state.attributes.problems or [] }}"
-          new: "{{ after | reject('in', before) | list }}"
-      - if: "{{ new | count > 0 }}"
-        then:
-          - action: notify.mobile_app_YOUR_PHONE
-            data:
-              title: "Danfoss: {{ new | count }} problem{{ 's' if new | count > 1 else '' }}"
-              message: "{{ new | join('\n') }}"
-              data:
-                push:
-                  interruption-level: time-sensitive
-      - if: "{{ before | count > 0 and after | count == 0 }}"
-        then:
-          - action: notify.mobile_app_YOUR_PHONE
-            data:
-              title: "Danfoss: all OK"
-              message: "All valve problems are solved."
+  # memory of the automation: when each current problem was first seen, and whether it was notified
+  - trigger:
+      - trigger: event
+        event_type: danfoss_alerts_memory
+    sensor:
+      - name: Danfoss alerts memory
+        unique_id: danfoss_alerts_memory
+        icon: mdi:bell-cog-outline
+        state: "{{ trigger.event.data.seen | count }}"
+        attributes:
+          seen: "{{ trigger.event.data.seen }}"

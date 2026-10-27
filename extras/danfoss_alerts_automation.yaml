@@ -1,0 +1,64 @@
+# Danfoss – notify valve problems (needs the sensors from danfoss_alerts.yaml)
+#
+# Add it in the UI so it stays editable there:
+#   Settings -> Automations & scenes -> + Create automation -> Create new automation
+#   -> ⋮ (top right) -> Edit in YAML -> replace everything with this file -> Save.
+# Then set your phone in both "notify.mobile_app_…" actions (or pick it in the visual editor).
+#
+# A problem is sent once it has lasted confirm_minutes (default 10): a valve dropping out for a
+# minute and coming back sends nothing. "All OK" comes when everything that was sent is solved.
+alias: Danfoss – notify valve problems
+description: Sends a Danfoss valve problem once it has lasted 10 minutes, and a message when all are solved.
+mode: queued
+max: 5
+triggers:
+  - trigger: state
+    entity_id: sensor.danfoss_problems
+    attribute: problems
+  - trigger: time_pattern
+    minutes: "/1"
+conditions:
+  - "{{ states('sensor.danfoss_problems') not in ['unknown', 'unavailable'] }}"
+actions:
+  - variables:
+      confirm_minutes: 10   # a problem must last this long before you are notified
+      now_ts: "{{ now().timestamp() | int }}"
+      current: "{{ state_attr('sensor.danfoss_problems', 'problems') or [] }}"
+      seen_in: "{{ state_attr('sensor.danfoss_alerts_memory', 'seen') or [] }}"
+      # keep only problems that still exist; new ones start their clock now. A remembered problem not
+      # seen in the last 2 minutes (e.g. it vanished while HA restarted) counts as new again.
+      seen: >-
+        {% set ns = namespace(out=[]) %}
+        {% for p in current %}
+          {% set old = seen_in | selectattr('p', 'eq', p) | selectattr('l', 'ge', now_ts - 120) | list %}
+          {% set ns.out = ns.out + [{'p': p, 't': old[0].t, 'n': old[0].n, 'l': now_ts} if old else {'p': p, 't': now_ts, 'n': false, 'l': now_ts}] %}
+        {% endfor %}
+        {{ ns.out }}
+      due: "{{ seen | selectattr('n', 'eq', false) | selectattr('t', 'le', now_ts - confirm_minutes * 60) | map(attribute='p') | list }}"
+      all_ok: "{{ (seen_in | selectattr('n', 'eq', true) | list | count) > 0 and current | count == 0 }}"
+      seen_out: >-
+        {% set ns = namespace(out=[]) %}
+        {% for x in seen %}
+          {% set ns.out = ns.out + [{'p': x.p, 't': x.t, 'n': x.n or x.p in due, 'l': x.l}] %}
+        {% endfor %}
+        {{ ns.out }}
+  - if: "{{ due | count > 0 }}"
+    then:
+      - action: notify.mobile_app_YOUR_PHONE
+        data:
+          title: "Danfoss: {{ due | count }} problem{{ 's' if due | count > 1 else '' }}"
+          message: "{{ due | join('\n') }}"
+          data:
+            push:
+              interruption-level: time-sensitive
+  - if: "{{ all_ok }}"
+    then:
+      - action: notify.mobile_app_YOUR_PHONE
+        data:
+          title: "Danfoss: all OK"
+          message: "All valve problems are solved."
+  - if: "{{ seen_out != seen_in }}"   # keeps 'last seen' fresh while problems exist
+    then:
+      - event: danfoss_alerts_memory
+        event_data:
+          seen: "{{ seen_out }}"

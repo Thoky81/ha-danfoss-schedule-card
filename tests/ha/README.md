@@ -7,7 +7,7 @@ and checks in WebKit – Safari's engine – that a scrolled dashboard doesn't j
 cd tests/ha
 python3 -m venv venv && ./venv/bin/pip install homeassistant playwright && ./venv/bin/python -m playwright install webkit
 mkdir -p config/www && cp ../../dist/danfoss-schedule-card.js config/www/
-./venv/bin/hass -c config &          # wait until http://127.0.0.1:8125 answers
+./venv/bin/hass -c config &          # wait until http://127.0.0.1:8123 answers
 ./onboard.sh > tokens.json           # first run only
 ./venv/bin/python scrolltest.py tokens.json 60 shot.png
 ```

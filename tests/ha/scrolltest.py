@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright
 
 tok = json.load(open(sys.argv[1]))
 seconds = int(sys.argv[2]) if len(sys.argv) > 2 else 40
-B = "http://127.0.0.1:8125"
+B = "http://127.0.0.1:8123"
 tokens = {**tok, "hassUrl": B, "clientId": B + "/", "expires": int(time.time() * 1000) + tok["expires_in"] * 1000}
 
 with sync_playwright() as p:
