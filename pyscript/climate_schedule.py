@@ -60,7 +60,7 @@ SLOTS = 48                   # 30-minute cells
 SLOT_MIN = 30
 MAX_BLOCKS = 6               # Danfoss: 6 transitions per day
 DAY_BITS = [2, 4, 8, 16, 32, 64, 1]  # Mon..Sun -> ZCL SeqDayOfWeek (Sun = bit0)
-RETRIES = 3
+RETRIES = 2                  # quick attempts per valve (30 s apart) before the later retries take over
 STARTUP_GRACE = 600         # s after start in which "valve came back" is a restart, not a battery change
 RETRY_LATER = [15, 60, 180]  # min: a valve that failed all attempts is tried again later (sleepy valves on weak links)
 RETRY_WAIT = 30              # s between attempts, gives the mesh time to find a route again
