@@ -16,8 +16,12 @@ Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
   (fallback if the on-valve schedule misbehaves).
 - clock: ZHA does not set the Danfoss clock, so the valves can run in UTC or
   without daylight saving time and switch blocks hours late. Before every
-  programming and once a day the backend writes the valve's Time cluster the
-  way Zigbee2MQTT does (UTC time, zone offset, DST start/end/shift).
+  programming (if not done in the last 20 h) and once a day (one valve at a
+  time) the backend writes the valve's Time cluster like Zigbee2MQTT does.
+  ZHA writes one attribute per Zigbee message, so only what the valve doesn't
+  have yet is sent: normally just the time (zone/DST rules change ~once a
+  year; a battery change resets them). Best effort: a failed clock write
+  never fails or retries the schedule programming.
 - presence: while one of the chosen persons is home (after a delay, default
   30 min both ways, so short flips of the tracking don't move the valves;
   or immediately with "Home today"),
@@ -47,6 +51,8 @@ TIME_CLUSTER = 10            # 0x000A, the valve's own clock
 # write order: zone and DST rules first, the time itself last
 TIME_ATTRS = [("time_zone", 2), ("dst_start", 3), ("dst_end", 4), ("dst_shift", 5), ("time_status", 1), ("time", 0)]
 TIME_SYNC = "cron(5 3 * * *)"   # daily clock sync for ZHA valves (Z2M does its own)
+TIME_SYNC_GAP = 15             # s between valves in the daily sync: one at a time, not a burst
+CLOCK_RESYNC_H = 20            # before programming, a valve's clock is set only if it wasn't in this many hours
 CMD_SET_WEEKLY = 1           # SetWeeklySchedule
 CMD_CLEAR_WEEKLY = 3         # ClearWeeklySchedule
 ATTR_PROG_MODE = 0x0025      # programming_operation_mode, bit0 = schedule
@@ -276,18 +282,47 @@ def zha_cmd(ieee, command, params=None):
     )
 
 
-def sync_time_zha(ieee):
+CLOCK_RULES = ("time_zone", "dst_start", "dst_end", "dst_shift")
+
+
+def clock_rec(sid, eid):
+    return (SCHEDULES.get(sid, {}).get("clock") or {}).get(eid) or {}
+
+
+def clock_due(sid, eid):
+    at = clock_rec(sid, eid).get("at")
+    return not at or (datetime.now() - datetime.fromisoformat(at)).total_seconds() > CLOCK_RESYNC_H * 3600
+
+
+def sync_time_zha(sid, eid, ieee):
+    """Each attribute is one Zigbee message with ZHA: write the zone/DST rules only when the valve
+    doesn't have them yet (first time, after a battery change, a new year's DST dates), then the time."""
     vals = _zigbee_time(str(hass.config.time_zone))
-    for name, attr in TIME_ATTRS:
+    rec = clock_rec(sid, eid)
+    todo = [(n, a) for n, a in TIME_ATTRS if n in CLOCK_RULES and rec.get(n) != vals[n]]
+    if todo or not rec.get("status"):
+        todo.append(("time_status", 1))
+    todo.append(("time", 0))
+    for name, attr in todo:
+        value = _zigbee_time(str(hass.config.time_zone))["time"] if name == "time" else vals[name]  # time: fresh
         service.call(
             "zha", "set_zigbee_cluster_attribute", blocking=True,
             ieee=ieee, endpoint_id=ENDPOINT, cluster_id=TIME_CLUSTER,
-            cluster_type="in", attribute=attr, value=vals[name],
+            cluster_type="in", attribute=attr, value=value,
         )
+    new = {n: vals[n] for n in CLOCK_RULES}
+    new.update(status=True, at=now_iso(), writes=len(todo))
+    SCHEDULES[sid].setdefault("clock", {})[eid] = new
 
 
-def program_zha(s, ieee, groups):
-    sync_time_zha(ieee)  # a wrong valve clock makes a correct schedule switch at the wrong hour
+def program_zha(sid, s, eid, ieee, groups):
+    # a wrong valve clock makes a correct schedule switch at the wrong hour - but the clock is best
+    # effort: a timeout here must not fail (and retry) the programming, which is what matters
+    if clock_due(sid, eid):
+        try:
+            sync_time_zha(sid, eid, ieee)
+        except Exception as e:
+            log.warning(f"climate_schedule {sid}: clock sync failed on {eid}, schedule sent anyway: {type(e).__name__} {e}")
     zha_cmd(ieee, CMD_CLEAR_WEEKLY)
     task.sleep(1)
     for key, days in groups.items():
@@ -441,7 +476,7 @@ def push_valve(sid, c, later=0):
     for attempt in range(RETRIES):
         try:
             if kind == "zha":
-                program_zha(s, target, groups)
+                program_zha(sid, s, eid, target, groups)
                 set_status(sid, eid, "ok", f"{len(groups)} day group(s) via ZHA{note}")
             else:
                 confirmed = program_z2m(s, target, groups, eid)
@@ -756,10 +791,12 @@ def climate_schedule_ha_tick():
 
 
 # ---------------------------------------------------------------- triggers
-def push_one(sid, eid):
+def push_one(sid, eid, forget_clock=False):
     s = SCHEDULES.get(sid)
     if not s or s.get("mode") != "native":
         return
+    if forget_clock:
+        (s.get("clock") or {}).pop(eid, None)  # after a battery change the valve has no clock/zone anymore
     for c in s["climates"]:
         if ent_id(c) == eid:
             set_status(sid, eid, "pending")
@@ -775,7 +812,7 @@ def make_avail_trigger(sid, eid):
         task.unique(f"climate_schedule_back_{sid}_{eid}")  # a flapping valve collapses into one push
         task.sleep(60)
         log.info(f"climate_schedule {sid}: {eid} is back, re-pushing it")
-        push_one(sid, eid)  # only this valve: the others still have their schedule
+        push_one(sid, eid, forget_clock=True)  # only this valve: the others still have their schedule
     return _came_back
 
 
@@ -820,8 +857,9 @@ def climate_schedule_startup():
 
 
 def zha_valves(schedule_id=None):
+    """[(sid, eid, ieee)] of the ZHA valves in native schedules"""
     ids = [slug(schedule_id)] if schedule_id else list(SCHEDULES)
-    out = {}
+    out = []
     for sid in ids:
         s = SCHEDULES.get(sid)
         if not s or s.get("mode") != "native":
@@ -829,25 +867,33 @@ def zha_valves(schedule_id=None):
         for c in s["climates"]:
             kind, target = resolve_target(c)
             if kind == "zha":
-                out[ent_id(c)] = target
+                out.append((sid, ent_id(c), target))
     return out
 
 
-def sync_time_one(eid, ieee):
+def sync_time_one(sid, eid, ieee):
     try:
-        sync_time_zha(ieee)
-        log.info(f"climate_schedule: clock set on {eid}")
+        sync_time_zha(sid, eid, ieee)
+        log.info(f"climate_schedule: clock set on {eid} ({clock_rec(sid, eid).get('writes')} write(s))")
     except Exception as e:
+        # no retry: the next daily sync (or the next programming) tries again
         log.warning(f"climate_schedule: clock sync failed on {eid}: {type(e).__name__} {e}")
 
 
-def sync_time_all(schedule_id=None):
-    tasks = set()
-    for eid, ieee in zha_valves(schedule_id).items():
-        if not is_unavailable(eid):
-            tasks.add(task.create(sync_time_one, eid, ieee))
-    if tasks:
-        task.wait(tasks)
+def sync_time_all(schedule_id=None, full=False):
+    """one valve at a time with a pause: a burst of writes to many battery valves causes timeouts"""
+    task.unique("climate_schedule_time_sync")
+    first = True
+    for sid, eid, ieee in zha_valves(schedule_id):
+        if is_unavailable(eid):
+            continue
+        if full:
+            (SCHEDULES[sid].get("clock") or {}).pop(eid, None)
+        if not first:
+            task.sleep(TIME_SYNC_GAP)
+        first = False
+        sync_time_one(sid, eid, ieee)
+    save_store()
 
 
 @time_trigger(TIME_SYNC)
@@ -945,7 +991,7 @@ fields:
         "status": {},
         "updated": now_iso(),
     }
-    for k in ("boost", "presence", "home_today"):  # survive editing the schedule
+    for k in ("boost", "presence", "home_today", "clock"):  # survive editing the schedule
         if old.get(k):
             SCHEDULES[sid][k] = old[k]
     save_store()
@@ -1120,7 +1166,7 @@ fields:
 def climate_schedule_sync_time(schedule_id=None):
     """yaml
 name: Sync valve clocks
-description: Write the current local time, zone and DST rules into the ZHA valves (all schedules if no id).
+description: Write the current local time, zone and DST rules into the ZHA valves, one valve at a time (all schedules if no id).
 fields:
   schedule_id:
     description: "Schedule id (empty = all)"
@@ -1128,7 +1174,7 @@ fields:
     selector:
       text:
 """
-    sync_time_all(schedule_id)
+    sync_time_all(schedule_id, full=True)  # on demand: write everything, not only what changed
 
 
 @service
