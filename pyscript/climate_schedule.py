@@ -62,6 +62,8 @@ MAX_BLOCKS = 6               # Danfoss: 6 transitions per day
 DAY_BITS = [2, 4, 8, 16, 32, 64, 1]  # Mon..Sun -> ZCL SeqDayOfWeek (Sun = bit0)
 RETRIES = 2                  # quick attempts per valve (30 s apart) before the later retries take over
 STARTUP_GRACE = 600         # s after start in which "valve came back" is a restart, not a battery change
+BULK_WINDOW = 180            # s: valves coming back this close together = the Zigbee network reconnected
+BULK_MIN = 3                 # this many valves back at once is a network event, not a battery change
 RETRY_LATER = [15, 60, 180]  # min: a valve that failed all attempts is tried again later (sleepy valves on weak links)
 RETRY_WAIT = 30              # s between attempts, gives the mesh time to find a route again
 DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -76,6 +78,7 @@ STARTED_AT = None
 AVAIL_TRIGGERS = {}
 LOG_TRIGGERS = {}
 PERSON_TRIGGERS = {}
+COMEBACKS = {}               # eid -> when it last came back from unavailable
 Z2M_ERRORS = {}              # ieee / friendly name -> last failure Z2M reported on <base>/bridge/logging
 HA_LAST = {}
 
@@ -809,8 +812,16 @@ def make_avail_trigger(sid, eid):
     def _came_back(**kwargs):
         if STARTED_AT is None or (datetime.now() - STARTED_AT).total_seconds() < STARTUP_GRACE:
             return  # HA / Zigbee restart: every valve "comes back", nothing was lost
+        back_at = datetime.now()
+        COMEBACKS[eid] = back_at
         task.unique(f"climate_schedule_back_{sid}_{eid}")  # a flapping valve collapses into one push
         task.sleep(60)
+        together = len([t for t in COMEBACKS.values() if abs((t - back_at).total_seconds()) <= BULK_WINDOW])
+        if together >= BULK_MIN:
+            # coordinator / mesh reconnect: the valves kept schedule and clock in their own memory, and
+            # re-pushing all of them at once floods the network (the daily clock sync covers the clocks)
+            log.info(f"climate_schedule {sid}: {eid} is back with {together - 1} other valve(s), Zigbee reconnect, not re-pushing")
+            return
         log.info(f"climate_schedule {sid}: {eid} is back, re-pushing it")
         push_one(sid, eid, forget_clock=True)  # only this valve: the others still have their schedule
     return _came_back
