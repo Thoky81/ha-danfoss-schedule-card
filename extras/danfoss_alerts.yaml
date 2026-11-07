@@ -1,7 +1,7 @@
 # Danfoss Ally valve alerts – independent of the schedule card.
 #
 # 1. sensor.danfoss_problems collects every current problem of all danfoss_* entities:
-#    - error code: ZHA  sensor.danfoss_*_software_error     (state "good" when fine; error bits as attributes)
+#    - error code: ZHA  sensor.danfoss_*_software_error     (error = one of its attributes is true)
 #                  Z2M  sensor.danfoss_*_system_status_code (state "ok" when fine; e.g. "motor_error,low_battery")
 #    - climate.danfoss_* unavailable (no contact) for more than 30 minutes
 #    - sensor.danfoss_*_battery below 20 %
@@ -25,10 +25,17 @@ template:
           problems: >-
             {% set ns = namespace(p=[]) %}
             {% for s in states.sensor | selectattr('entity_id', 'search', '^sensor\.danfoss_.*_(software_error|system_status_code)$') %}
-              {% if s.state not in ['good', 'ok', 'unknown', 'unavailable', ''] %}
-                {% set ns2 = namespace(bits=[]) %}
-                {% for k, v in s.attributes.items() if v is sameas true %}{% set ns2.bits = ns2.bits + [k] %}{% endfor %}
-                {% set ns.p = ns.p + [s.name ~ ': ' ~ ('error' if s.state == 'something' else s.state) ~ ((' (' ~ ns2.bits | join(', ') ~ ')') if ns2.bits else '')] %}
+              {% if s.entity_id.endswith('_software_error') %}
+                {# ZHA: an error only when one of the error attributes is true; the state text varies by
+                   ZHA version ("good", "nothing", ...) and says nothing on its own #}
+                {% set nb = namespace(bits=[], has=false) %}
+                {% for k, v in s.attributes.items() if v is boolean %}{% set nb.has = true %}{% if v %}{% set nb.bits = nb.bits + [k | lower | replace('_', ' ')] %}{% endif %}{% endfor %}
+                {% if nb.bits or (not nb.has and s.state not in ['good', 'nothing', 'ok', 'unknown', 'unavailable', '']) %}
+                  {% set ns.p = ns.p + [s.name ~ ': ' ~ (nb.bits | join(', ') if nb.bits else s.state)] %}
+                {% endif %}
+              {% elif s.state not in ['ok', 'unknown', 'unavailable', ''] %}
+                {# Z2M: "ok" when fine, else e.g. "invalid_clock_information,low_battery" #}
+                {% set ns.p = ns.p + [s.name ~ ': ' ~ s.state | replace('_', ' ') | replace(',', ', ')] %}
               {% endif %}
             {% endfor %}
             {% for s in states.climate | selectattr('entity_id', 'search', '^climate\.danfoss_') %}
