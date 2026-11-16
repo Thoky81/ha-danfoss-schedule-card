@@ -94,12 +94,22 @@ def _read_store(path):
 
 
 @pyscript_compile
-def _write_store(path, data):
-    import json, os
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1, ensure_ascii=False)
-    os.replace(tmp, path)
+def _write_store(path, text):
+    # Own temp file per save: two saves running at the same moment used to share
+    # "<path>.tmp", so the second os.replace() found it already moved (FileNotFoundError).
+    # os.replace() is atomic, so the last save wins and the file is never half-written.
+    import os, tempfile
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 @pyscript_compile
@@ -145,7 +155,9 @@ def _zigbee_time(tzname):
 
 
 def save_store():
-    task.executor(_write_store, STORE, SCHEDULES)
+    # Serialize here, on the event loop: dumping SCHEDULES in the executor thread could
+    # race with a schedule being changed at the same time.
+    task.executor(_write_store, STORE, json.dumps(SCHEDULES, indent=1, ensure_ascii=False))
 
 
 # ---------------------------------------------------------------- helpers
