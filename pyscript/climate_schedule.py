@@ -22,6 +22,12 @@ Danfoss Ally (eTRV0100 / 014G2461) via ZHA and/or Zigbee2MQTT.
   have yet is sent: normally just the time (zone/DST rules change ~once a
   year; a battery change resets them). Best effort: a failed clock write
   never fails or retries the schedule programming.
+- mode check: after a firmware update, a reset or a change in the valve's
+  menu the Ally can be back in setpoint mode. It still has the schedule in
+  memory but ignores it and holds the last setpoint for days. Once a day
+  (after the clock sync, one valve at a time) every native valve is asked
+  for programming_operation_mode; a valve with the schedule bit off is
+  re-programmed (ZHA: attribute read, Zigbee2MQTT: its mode entity).
 - presence: while one of the chosen persons is home (after a delay, default
   30 min both ways, so short flips of the tracking don't move the valves;
   or immediately with "Home today"),
@@ -903,6 +909,67 @@ def sync_time_one(sid, eid, ieee):
         log.warning(f"climate_schedule: clock sync failed on {eid}: {type(e).__name__} {e}")
 
 
+def read_prog_mode_zha(ieee):
+    """programming_operation_mode as the valve reports it right now (not ZHA's cache), None if no answer.
+    ZHA has no service to read an attribute, so this asks zigpy directly. Imported here, not at the
+    top: zigpy is only installed where ZHA is used, and a Zigbee2MQTT-only setup must still load."""
+    from homeassistant.components.zha.helpers import get_zha_gateway
+    import zigpy.types as zt
+    device = get_zha_gateway(hass).application_controller.get_device(ieee=zt.EUI64.convert(ieee))
+    cluster = device.endpoints[ENDPOINT].in_clusters[THERMOSTAT]
+    res = cluster.read_attributes([ATTR_PROG_MODE], allow_cache=False)
+    for value in res[0].values():
+        return int(value)
+    return None
+
+
+def check_mode_zha(sid, eid, ieee):
+    """A valve that is back in setpoint mode (firmware update, reset, valve menu) keeps the schedule
+    in memory but ignores it: re-program it. Best effort, a valve that doesn't answer is skipped."""
+    s = SCHEDULES.get(sid) or {}
+    if s.get("mode") != "native" or not int(s.get("oper_mode", 1)) & 1:
+        return
+    try:
+        got = read_prog_mode_zha(ieee)
+    except Exception as e:
+        log.warning(f"climate_schedule: mode check skipped on {eid}: {type(e).__name__} {e}")
+        return
+    if got is None or got & 1:
+        return
+    log.warning(f"climate_schedule {sid}: {eid} is not in schedule mode (programming_operation_mode {got}), re-programming it")
+    task.create(push_one, sid, eid)
+
+
+def check_modes_z2m():
+    """Same check for Zigbee2MQTT valves, through the mode entity Z2M creates (refreshed with a get first)."""
+    first = True
+    for sid in list(SCHEDULES):
+        s = SCHEDULES[sid]
+        if s.get("mode") != "native" or not int(s.get("oper_mode", 1)) & 1:
+            continue
+        for c in s["climates"]:
+            kind, target = resolve_target(c)
+            eid = ent_id(c)
+            if kind != "z2m" or is_unavailable(eid):
+                continue
+            me = mode_entity(eid)
+            if me is None:
+                continue
+            if not first:
+                task.sleep(TIME_SYNC_GAP)
+            first = False
+            try:
+                z2m_get(s, target, "programming_operation_mode")
+                task.sleep(Z2M_GAP)
+                got = state.get(me)
+            except Exception as e:
+                log.warning(f"climate_schedule: mode check skipped on {eid}: {type(e).__name__} {e}")
+                continue
+            if got in ("setpoint", "eco"):  # schedule bit off
+                log.warning(f"climate_schedule {sid}: {eid} is in '{got}' mode, not schedule, re-programming it")
+                task.create(push_one, sid, eid)
+
+
 def sync_time_all(schedule_id=None, full=False):
     """one valve at a time with a pause: a burst of writes to many battery valves causes timeouts"""
     task.unique("climate_schedule_time_sync")
@@ -916,12 +983,14 @@ def sync_time_all(schedule_id=None, full=False):
             task.sleep(TIME_SYNC_GAP)
         first = False
         sync_time_one(sid, eid, ieee)
+        check_mode_zha(sid, eid, ieee)
     save_store()
 
 
 @time_trigger(TIME_SYNC)
 def climate_schedule_time_sync():
-    sync_time_all()
+    sync_time_all()     # ZHA: clock, then the mode check per valve
+    check_modes_z2m()   # Z2M sets its clocks itself, only the mode is checked
 
 
 @time_trigger(NIGHTLY_RESYNC)
@@ -1189,7 +1258,7 @@ fields:
 def climate_schedule_sync_time(schedule_id=None):
     """yaml
 name: Sync valve clocks
-description: Write the current local time, zone and DST rules into the ZHA valves, one valve at a time (all schedules if no id).
+description: Write the current local time, zone and DST rules into the ZHA valves, one valve at a time (all schedules if no id), and re-program any valve that is no longer in schedule mode.
 fields:
   schedule_id:
     description: "Schedule id (empty = all)"
